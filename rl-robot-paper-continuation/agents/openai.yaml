@@ -1,0 +1,4 @@
+interface:
+  display_name: "RL Robot Paper Continuation"
+  short_description: "Continue rl_robot attention PPO experiments"
+  default_prompt: "Use $rl-robot-paper-continuation in the rl_robot project to continue the MuJoCo RL paper pipeline, including attention risk-aware PPO, stronger baselines, ablations, monitoring, and result aggregation."

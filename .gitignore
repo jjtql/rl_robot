@@ -19,3 +19,4 @@ runs/
 .vscode/
 .idea/
 .DS_Store
+.codex_video_frames/
