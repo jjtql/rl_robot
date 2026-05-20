@@ -1,0 +1,174 @@
+<mujoco model="abb_irb6700_real_validation">
+  <option iterations="150" timestep="0.002" solver="Newton" integrator="implicit" gravity="0 0 -9.81" />
+
+  <compiler angle="radian" meshdir="meshes" autolimits="true" />
+
+  <default>
+    <geom contype="1" conaffinity="1" condim="3" margin="0.001" solref="0.001 2" />
+    <joint limited="true" damping="200" armature="15" frictionloss="1.5" />
+    <position ctrllimited="true" forcelimited="true"/>
+  </default>
+
+  <asset>
+    <mesh name="base_link" file="base_link.stl" />
+    <mesh name="link_1" file="link_1.stl" />
+    <mesh name="link_2" file="link_2.stl" />
+    <mesh name="link_3" file="link_3.stl" />
+    <mesh name="link_4" file="link_4.stl" />
+    <mesh name="link_5" file="link_5.stl" />
+    <mesh name="link_6" file="link_6.stl" />
+    <texture name="tex_plane" type="2d" builtin="checker" rgb1=".2 .2 .2" rgb2=".3 .3 .3" width="100" height="100" />
+    <material name="mat_plane" texture="tex_plane" texrepeat="1 1" />
+  </asset>
+
+  <worldbody>
+    <light directional="true" diffuse="0.6 0.6 0.6" pos="0 0 5" dir="0 0 -1" />
+    <geom name="ground" type="plane" pos="0 0 0" size="10 10 0.01" material="mat_plane" contype="1" conaffinity="1" />
+
+    <body name="pot" pos="1.8 0 0">
+        <geom name="pot_bottom" type="cylinder" size="1.0 0.05" pos="0 0 0.025" rgba="0.3 0.3 0.3 1" />
+        <geom name="pot_wall" type="cylinder" size="1.05 0.5" pos="0 0 0.5" rgba="0.5 0.5 0.8 0.2" contype="1" conaffinity="1" />
+        <geom name="pot_vol" type="cylinder" size="0.8 0.3" pos="0 0 0.15" rgba="0.4 0.4 0.8 0.2" />
+        
+        <site name="s0" pos="0 0 0.1" size="0.04" rgba="1 0 0 0" />
+        <site name="s1" pos="0 0 0.1" size="0.04" rgba="1 0 0 0" />
+        <site name="s2" pos="0 0 0.1" size="0.04" rgba="1 0 0 0" />
+        <site name="s3" pos="0 0 0.1" size="0.04" rgba="1 0 0 0" />
+        <site name="s4" pos="0 0 0.1" size="0.04" rgba="1 0 0 0" />
+        <site name="pred_site" pos="0 0 0.12" size="0.055" rgba="0 0.6 1 0" />
+        <site name="spray_site" pos="0 0 0.11" size="0.08" rgba="0.1 1 0.2 0" />
+        <geom name="mat_cell_0_0" type="sphere" pos="-0.72 -0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_0_1" type="sphere" pos="-0.72 -0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_0_2" type="sphere" pos="-0.72 -0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_0_3" type="sphere" pos="-0.72 -0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_0_4" type="sphere" pos="-0.72 0.00 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_0_5" type="sphere" pos="-0.72 0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_0_6" type="sphere" pos="-0.72 0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_0_7" type="sphere" pos="-0.72 0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_0_8" type="sphere" pos="-0.72 0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_1_0" type="sphere" pos="-0.54 -0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_1_1" type="sphere" pos="-0.54 -0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_1_2" type="sphere" pos="-0.54 -0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_1_3" type="sphere" pos="-0.54 -0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_1_4" type="sphere" pos="-0.54 0.00 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_1_5" type="sphere" pos="-0.54 0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_1_6" type="sphere" pos="-0.54 0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_1_7" type="sphere" pos="-0.54 0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_1_8" type="sphere" pos="-0.54 0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_2_0" type="sphere" pos="-0.36 -0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_2_1" type="sphere" pos="-0.36 -0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_2_2" type="sphere" pos="-0.36 -0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_2_3" type="sphere" pos="-0.36 -0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_2_4" type="sphere" pos="-0.36 0.00 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_2_5" type="sphere" pos="-0.36 0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_2_6" type="sphere" pos="-0.36 0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_2_7" type="sphere" pos="-0.36 0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_2_8" type="sphere" pos="-0.36 0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_3_0" type="sphere" pos="-0.18 -0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_3_1" type="sphere" pos="-0.18 -0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_3_2" type="sphere" pos="-0.18 -0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_3_3" type="sphere" pos="-0.18 -0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_3_4" type="sphere" pos="-0.18 0.00 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_3_5" type="sphere" pos="-0.18 0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_3_6" type="sphere" pos="-0.18 0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_3_7" type="sphere" pos="-0.18 0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_3_8" type="sphere" pos="-0.18 0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_4_0" type="sphere" pos="0.00 -0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_4_1" type="sphere" pos="0.00 -0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_4_2" type="sphere" pos="0.00 -0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_4_3" type="sphere" pos="0.00 -0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_4_4" type="sphere" pos="0.00 0.00 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_4_5" type="sphere" pos="0.00 0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_4_6" type="sphere" pos="0.00 0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_4_7" type="sphere" pos="0.00 0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_4_8" type="sphere" pos="0.00 0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_5_0" type="sphere" pos="0.18 -0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_5_1" type="sphere" pos="0.18 -0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_5_2" type="sphere" pos="0.18 -0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_5_3" type="sphere" pos="0.18 -0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_5_4" type="sphere" pos="0.18 0.00 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_5_5" type="sphere" pos="0.18 0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_5_6" type="sphere" pos="0.18 0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_5_7" type="sphere" pos="0.18 0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_5_8" type="sphere" pos="0.18 0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_6_0" type="sphere" pos="0.36 -0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_6_1" type="sphere" pos="0.36 -0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_6_2" type="sphere" pos="0.36 -0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_6_3" type="sphere" pos="0.36 -0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_6_4" type="sphere" pos="0.36 0.00 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_6_5" type="sphere" pos="0.36 0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_6_6" type="sphere" pos="0.36 0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_6_7" type="sphere" pos="0.36 0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_6_8" type="sphere" pos="0.36 0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_7_0" type="sphere" pos="0.54 -0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_7_1" type="sphere" pos="0.54 -0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_7_2" type="sphere" pos="0.54 -0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_7_3" type="sphere" pos="0.54 -0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_7_4" type="sphere" pos="0.54 0.00 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_7_5" type="sphere" pos="0.54 0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_7_6" type="sphere" pos="0.54 0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_7_7" type="sphere" pos="0.54 0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_7_8" type="sphere" pos="0.54 0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_8_0" type="sphere" pos="0.72 -0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_8_1" type="sphere" pos="0.72 -0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_8_2" type="sphere" pos="0.72 -0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_8_3" type="sphere" pos="0.72 -0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_8_4" type="sphere" pos="0.72 0.00 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_8_5" type="sphere" pos="0.72 0.18 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_8_6" type="sphere" pos="0.72 0.36 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_8_7" type="sphere" pos="0.72 0.54 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+        <geom name="mat_cell_8_8" type="sphere" pos="0.72 0.72 0.056" size="0.012" rgba="0.55 0.32 0.12 0" contype="0" conaffinity="0" />
+    </body>
+    <body name="base" pos="0 0 0.38">
+      <geom type="mesh" mesh="base_link" rgba="0.925 0.925 0.905 1" />
+      <body name="link_1" pos="0 0 0.78">
+        <joint name="joint_1" axis="0 0 1" range="-2.967 2.967" />
+        <geom type="mesh" mesh="link_1" rgba="0.925 0.925 0.905 1" />
+        <body name="link_2" pos="0.32 0 0">
+          <joint name="joint_2" axis="0 1 0" range="-1.134 1.483" />
+          <geom type="mesh" mesh="link_2" rgba="0.925 0.925 0.905 1" />
+          <body name="link_3" pos="0 0 1.135">
+            <joint name="joint_3" axis="0 1 0" range="-3.141 1.221" />
+            <geom type="mesh" mesh="link_3" rgba="0.925 0.925 0.905 1" />
+            <body name="link_4" pos="0 0 0.2">
+              <joint name="joint_4" axis="1 0 0" range="-5.235 5.235" />
+              <geom type="mesh" mesh="link_4" rgba="0.925 0.925 0.905 1" />
+              <body name="link_5" pos="1.18 0 0">
+                <joint name="joint_5" axis="0 1 0" range="-2.268 2.268" />
+                <geom type="mesh" mesh="link_5" rgba="0.925 0.925 0.905 1" />
+                <body name="link_6" pos="0.2 0 0">
+                  <joint name="joint_6" axis="1 0 0" range="-6.283 6.283" />
+                  <geom type="mesh" mesh="link_6" rgba="0.5 0.9 0.2 1" />
+                  <site name="ee_site" pos="0.1 0 0" size="0.01" rgba="1 0 0 1" />
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+
+  </worldbody>
+
+  <contact>
+    <exclude body1="base" body2="link_1"/>
+    <exclude body1="link_1" body2="link_2"/>
+    <exclude body1="link_2" body2="link_3"/>
+    <exclude body1="link_3" body2="link_4"/>
+    <exclude body1="link_4" body2="link_5"/>
+    <exclude body1="link_5" body2="link_6"/>
+  </contact>
+
+  <actuator>
+    <position name="a_j1" joint="joint_1" kp="50000" kv="5000" ctrlrange="-2.967 2.967" forcerange="-15000 15000"/>
+    <position name="a_j2" joint="joint_2" kp="100000" kv="10000" ctrlrange="-1.134 1.483" forcerange="-20000 20000"/>
+    <position name="a_j3" joint="joint_3" kp="60000" kv="6000" ctrlrange="-3.141 1.221" forcerange="-150000 150000"/>
+    <position name="a_j4" joint="joint_4" kp="30000" kv="3000" ctrlrange="-5.235 5.235" forcerange="-50000 50000"/>
+    <position name="a_j5" joint="joint_5" kp="30000" kv="3000" ctrlrange="-2.268 2.268" forcerange="-5000 5000"/>
+    <position name="a_j6" joint="joint_6" kp="20000" kv="2000" ctrlrange="-6.283 6.283" forcerange="-20000 20000"/>
+    </actuator>
+
+  <sensor>
+    <framepos name="ee_pos" objtype="site" objname="ee_site" />
+  </sensor>
+</mujoco>

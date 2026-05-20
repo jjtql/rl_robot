@@ -1,0 +1,21 @@
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Local environments
+mujoco_rl_env/
+.venv/
+venv/
+
+# RL outputs and large generated artifacts
+runs/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.log
+
+# Local editor/tool state
+.vscode/
+.idea/
+.DS_Store
