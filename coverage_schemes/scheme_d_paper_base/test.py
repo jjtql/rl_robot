@@ -44,6 +44,7 @@ def test_model(
         max_episode_steps=max_steps if demo_mode else 400,
         target_selector=target_selector,
         steam_attention_observation=checkpoint_cfg.get("use_steam_attention", False),
+        spawn_history_observation=checkpoint_cfg.get("use_spawn_history_observation", False),
         material_map_observation=checkpoint_cfg.get("use_material_map", False),
     )
     env.configure_curriculum(stage)
@@ -64,6 +65,7 @@ def test_model(
         use_lstm=checkpoint_cfg.get("use_lstm", True),
         use_steam_attention=checkpoint_cfg.get("use_steam_attention", False),
         use_material_map=checkpoint_cfg.get("use_material_map", False),
+        base_obs_dim=getattr(env, "base_obs_dim", checkpoint_cfg.get("base_obs_dim", 35)),
     )
 
     print(f"Model: {model_path}")

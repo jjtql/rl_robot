@@ -6,6 +6,15 @@ import torch.optim as optim
 from torch.distributions import Normal
 
 
+def resolve_device(device=None):
+    requested = "auto" if device is None else str(device)
+    if requested == "auto":
+        requested = "cuda" if torch.cuda.is_available() else "cpu"
+    if requested.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError(f"CUDA device requested ({requested}) but torch.cuda.is_available() is false")
+    return torch.device(requested)
+
+
 class ACModel_LSTM(nn.Module):
     """
     Actor-Critic model with LSTM for temporal reasoning.
@@ -258,6 +267,7 @@ class PPOAgent:
         use_lstm=True,
         use_steam_attention=False,
         use_material_map=False,
+        base_obs_dim=35,
         lr=1e-4,
         ppo_epochs=4,
         clip_param=0.12,
@@ -268,16 +278,20 @@ class PPOAgent:
         entropy_coef_end=0.0005,
         entropy_decay_steps=240000,
         max_grad_norm=0.35,
+        pred_coef=0.0,
         bc_supervised_coef=0.03,
         bc_supervised_min_coef=0.0,
         bc_supervised_decay_steps=240000,
+        device="auto",
     ):
+        self.device = resolve_device(device)
         self.s_dim = s_dim
         self.a_dim = a_dim
         self.seq_len = seq_len
         self.use_steam_attention = bool(use_steam_attention)
         self.use_material_map = bool(use_material_map)
         self.use_lstm = bool(use_lstm) or self.use_steam_attention or self.use_material_map
+        self.base_obs_dim = int(base_obs_dim)
         if self.use_material_map:
             self.use_steam_attention = True
         if self.use_steam_attention:
@@ -286,11 +300,13 @@ class PPOAgent:
                 s_dim,
                 a_dim,
                 hidden_dim=hidden_dim,
+                base_obs_dim=self.base_obs_dim,
                 material_map_channels=material_map_channels,
             )
         else:
             model_cls = ACModel_LSTM if self.use_lstm else ACModel_MLP
             self.model = model_cls(s_dim, a_dim, hidden_dim=hidden_dim)
+        self.model.to(self.device)
 
         # Learning rate with warmup capability
         self.base_lr = float(lr)
@@ -314,7 +330,7 @@ class PPOAgent:
         self.lamda = 0.95
 
         # Auxiliary loss coefficients
-        self.pred_coef = 0.0  # Disabled - not using prediction
+        self.pred_coef = float(pred_coef)
         self.smooth_coef = 0.02
         self.action_l2_coef = 0.002
         self.bc_supervised_coef_start = float(bc_supervised_coef)
@@ -324,7 +340,7 @@ class PPOAgent:
         # ICM (disabled for now)
         self.icm_reward_coef = 0.0
         self.icm_loss_coef = 0.0
-        self.icm = ICMModel(s_dim, a_dim, hidden_dim=hidden_dim)
+        self.icm = ICMModel(s_dim, a_dim, hidden_dim=hidden_dim).to(self.device)
         self.icm_opt = optim.Adam(self.icm.parameters(), lr=1e-4)
 
         # Training step counter
@@ -368,7 +384,7 @@ class PPOAgent:
         return mu, std, b_values, pred_xy, (hx, cx)
 
     def select_action(self, s, hx=None, cx=None, deterministic=False):
-        s = torch.tensor(s, dtype=torch.float32).view(1, 1, -1)
+        s = torch.tensor(s, dtype=torch.float32, device=self.device).view(1, 1, -1)
         with torch.no_grad():
             hidden_in = (hx, cx) if self.use_lstm and hx is not None and cx is not None else None
             mu, std, val, pred_xy, (hx_n, cx_n) = self.model(s, hidden_in)
@@ -377,18 +393,18 @@ class PPOAgent:
             action = torch.clamp(action, -1.0, 1.0)
             log_prob = dist.log_prob(action).sum().item()
         return (
-            action.numpy().flatten(),
+            action.detach().cpu().numpy().flatten(),
             log_prob,
             val.item(),
-            pred_xy.numpy().flatten(),
+            pred_xy.detach().cpu().numpy().flatten(),
             hx_n,
             cx_n,
         )
 
     def intrinsic_reward(self, s, s_next, a):
-        s_t = torch.tensor(s, dtype=torch.float32).view(1, 1, -1)
-        s_nt = torch.tensor(s_next, dtype=torch.float32).view(1, 1, -1)
-        a_t = torch.tensor(a, dtype=torch.float32).view(1, 1, -1)
+        s_t = torch.tensor(s, dtype=torch.float32, device=self.device).view(1, 1, -1)
+        s_nt = torch.tensor(s_next, dtype=torch.float32, device=self.device).view(1, 1, -1)
+        a_t = torch.tensor(a, dtype=torch.float32, device=self.device).view(1, 1, -1)
         with torch.no_grad():
             r_int, _, _ = self.icm(s_t, s_nt, a_t)
         return float(r_int.mean().item())
@@ -405,8 +421,8 @@ class PPOAgent:
             indices = np.random.permutation(n)
             for start in range(0, n, batch_size):
                 batch_idx = indices[start:start + batch_size]
-                s_t = torch.tensor(states[batch_idx], dtype=torch.float32).view(-1, 1, self.s_dim)
-                a_t = torch.tensor(actions[batch_idx], dtype=torch.float32).view(-1, 1, self.a_dim)
+                s_t = torch.tensor(states[batch_idx], dtype=torch.float32, device=self.device).view(-1, 1, self.s_dim)
+                a_t = torch.tensor(actions[batch_idx], dtype=torch.float32, device=self.device).view(-1, 1, self.a_dim)
                 mu, _, _, _, _ = self.model(s_t, hidden=None)
                 bc_loss = F.mse_loss(mu, a_t)
 
@@ -423,15 +439,15 @@ class PPOAgent:
             return {}
 
         num_episodes = usable_steps // self.seq_len
-        states = torch.tensor(np.array(memory["s"][:usable_steps]), dtype=torch.float32).view(num_episodes, self.seq_len, -1)
-        next_states = torch.tensor(np.array(memory["s_next"][:usable_steps]), dtype=torch.float32).view(num_episodes, self.seq_len, -1)
-        actions = torch.tensor(np.array(memory["a"][:usable_steps]), dtype=torch.float32).view(num_episodes, self.seq_len, -1)
-        old_log_probs = torch.tensor(np.array(memory["lp"][:usable_steps]), dtype=torch.float32).view(num_episodes, self.seq_len, 1)
-        reset_masks = torch.tensor(np.array(memory["reset"][:usable_steps]), dtype=torch.float32).view(num_episodes, self.seq_len, 1)
-        pred_targets = torch.tensor(np.array(memory["pred_target"][:usable_steps]), dtype=torch.float32).view(num_episodes, self.seq_len, -1)
-        pred_masks = torch.tensor(np.array(memory["pred_mask"][:usable_steps]), dtype=torch.float32).view(num_episodes, self.seq_len, 1)
-        bc_actions = torch.tensor(np.array(memory["bc_a"][:usable_steps]), dtype=torch.float32).view(num_episodes, self.seq_len, -1)
-        bc_masks = torch.tensor(np.array(memory["bc_mask"][:usable_steps]), dtype=torch.float32).view(num_episodes, self.seq_len, 1)
+        states = torch.tensor(np.array(memory["s"][:usable_steps]), dtype=torch.float32, device=self.device).view(num_episodes, self.seq_len, -1)
+        next_states = torch.tensor(np.array(memory["s_next"][:usable_steps]), dtype=torch.float32, device=self.device).view(num_episodes, self.seq_len, -1)
+        actions = torch.tensor(np.array(memory["a"][:usable_steps]), dtype=torch.float32, device=self.device).view(num_episodes, self.seq_len, -1)
+        old_log_probs = torch.tensor(np.array(memory["lp"][:usable_steps]), dtype=torch.float32, device=self.device).view(num_episodes, self.seq_len, 1)
+        reset_masks = torch.tensor(np.array(memory["reset"][:usable_steps]), dtype=torch.float32, device=self.device).view(num_episodes, self.seq_len, 1)
+        pred_targets = torch.tensor(np.array(memory["pred_target"][:usable_steps]), dtype=torch.float32, device=self.device).view(num_episodes, self.seq_len, -1)
+        pred_masks = torch.tensor(np.array(memory["pred_mask"][:usable_steps]), dtype=torch.float32, device=self.device).view(num_episodes, self.seq_len, 1)
+        bc_actions = torch.tensor(np.array(memory["bc_a"][:usable_steps]), dtype=torch.float32, device=self.device).view(num_episodes, self.seq_len, -1)
+        bc_masks = torch.tensor(np.array(memory["bc_mask"][:usable_steps]), dtype=torch.float32, device=self.device).view(num_episodes, self.seq_len, 1)
 
         rewards = np.asarray(memory["r"][:usable_steps], dtype=np.float32)
         rewards = np.clip(rewards * self.reward_scale, -self.reward_clip, self.reward_clip).tolist()
@@ -448,8 +464,8 @@ class PPOAgent:
             advantages.insert(0, gae)
             returns.insert(0, gae + values[i])
 
-        returns = torch.tensor(returns, dtype=torch.float32).view(num_episodes, self.seq_len, 1)
-        advantages = torch.tensor(advantages, dtype=torch.float32).view(num_episodes, self.seq_len, 1)
+        returns = torch.tensor(returns, dtype=torch.float32, device=self.device).view(num_episodes, self.seq_len, 1)
+        advantages = torch.tensor(advantages, dtype=torch.float32, device=self.device).view(num_episodes, self.seq_len, 1)
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         current_entropy_coef = self._get_entropy_coef()
@@ -466,7 +482,7 @@ class PPOAgent:
             surr1 = ratio * advantages
             surr2 = torch.clamp(ratio, 1 - self.clip_param, 1 + self.clip_param) * advantages
             actor_loss = -torch.min(surr1, surr2).mean() - current_entropy_coef * entropy
-            old_values = torch.tensor(np.array(memory["v"][:usable_steps]), dtype=torch.float32).view(num_episodes, self.seq_len, 1)
+            old_values = torch.tensor(np.array(memory["v"][:usable_steps]), dtype=torch.float32, device=self.device).view(num_episodes, self.seq_len, 1)
             clipped_values = old_values + torch.clamp(b_values - old_values, -self.value_clip_param, self.value_clip_param)
             critic_loss_unclipped = F.smooth_l1_loss(b_values, returns, reduction="none")
             critic_loss_clipped = F.smooth_l1_loss(clipped_values, returns, reduction="none")
@@ -477,7 +493,7 @@ class PPOAgent:
             if actions.size(1) > 1:
                 action_smooth_loss = F.mse_loss(actions[:, 1:], actions[:, :-1])
             else:
-                action_smooth_loss = torch.tensor(0.0, dtype=torch.float32)
+                action_smooth_loss = torch.tensor(0.0, dtype=torch.float32, device=self.device)
             action_l2_loss = actions.pow(2).mean()
             bc_supervised_error = F.mse_loss(mu, bc_actions, reduction="none").mean(dim=-1, keepdim=True)
             bc_supervised_loss = (bc_supervised_error * bc_masks).sum() / (bc_masks.sum() + 1e-8)
@@ -499,6 +515,7 @@ class PPOAgent:
                 "actor_loss": float(actor_loss.item()),
                 "critic_loss": float(critic_loss.item()),
                 "pred_loss": float(pred_loss.item()),
+                "pred_coef": float(self.pred_coef),
                 "smooth_loss": float(action_smooth_loss.item()),
                 "l2_loss": float(action_l2_loss.item()),
                 "bc_supervised_loss": float(bc_supervised_loss.item()),

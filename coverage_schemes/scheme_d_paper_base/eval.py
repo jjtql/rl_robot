@@ -10,6 +10,34 @@ from .env import ShangZengEnv
 from .policies import build_policy, checkpoint_config
 
 
+def env_step_seconds(env):
+    try:
+        step_seconds = float(env.model.opt.timestep)
+    except (AttributeError, TypeError, ValueError):
+        step_seconds = 1.0
+    return step_seconds if step_seconds > 0.0 else 1.0
+
+
+def coverage_timing_metrics(steps, success_count, spawned_count, cover_latency_steps, step_seconds):
+    episode_time_seconds = float(steps) * float(step_seconds)
+    cover_latency_seconds = float(cover_latency_steps) * float(step_seconds)
+    return {
+        "step_seconds": float(step_seconds),
+        "episode_time_seconds": episode_time_seconds,
+        "cover_latency_seconds": cover_latency_seconds,
+        "per_point_cover_speed": (
+            1.0 / cover_latency_seconds if success_count > 0 and cover_latency_seconds > 0.0 else 0.0
+        ),
+        "covered_per_second": (
+            float(success_count) / episode_time_seconds if episode_time_seconds > 0.0 else 0.0
+        ),
+        "spawned_per_second": (
+            float(spawned_count) / episode_time_seconds if episode_time_seconds > 0.0 else 0.0
+        ),
+        "covered_per_100_steps": float(success_count) * 100.0 / float(steps) if steps > 0 else 0.0,
+    }
+
+
 def configure_env_from_config(env, config):
     env.set_target_selector(config.get("target_selector", "risk_aware"))
     env.potential_shaping_enabled = bool(config.get("potential_shaping", True))
@@ -22,6 +50,19 @@ def configure_env_from_config(env, config):
     env.action_noise_std = float(config.get("action_noise_std", 0.0))
     env.domain_randomization_enabled = bool(config.get("domain_randomization", False))
     env.domain_randomization_scale = float(config.get("domain_randomization_scale", env.domain_randomization_scale))
+    env.thermal_spawn_enabled = bool(config.get("thermal_spawn", True))
+    env.thermal_hotspot_count = int(config.get("thermal_hotspot_count", env.thermal_hotspot_count))
+    env.thermal_hotspot_sigma = float(config.get("thermal_hotspot_sigma", env.thermal_hotspot_sigma))
+    env.thermal_hotspot_strength = float(config.get("thermal_hotspot_strength", env.thermal_hotspot_strength))
+    env.thermal_background_weight = float(config.get("thermal_background_weight", env.thermal_background_weight))
+    env.thermal_drift_std = float(config.get("thermal_drift_std", env.thermal_drift_std))
+    env.thermal_refresh_probability = float(config.get("thermal_refresh_probability", env.thermal_refresh_probability))
+    env.thermal_lifetime_steps = int(config.get("thermal_lifetime_steps", env.thermal_lifetime_steps))
+    env.thermal_recent_spawn_radius = float(config.get("thermal_recent_spawn_radius", env.thermal_recent_spawn_radius))
+    env.thermal_recent_spawn_suppression = float(
+        config.get("thermal_recent_spawn_suppression", env.thermal_recent_spawn_suppression)
+    )
+    env.thermal_recent_spawn_memory = int(config.get("thermal_recent_spawn_memory", env.thermal_recent_spawn_memory))
     return env
 
 
@@ -37,6 +78,7 @@ def build_arg_parser():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output", default="runs/eval/results.csv")
     parser.add_argument("--model-path", help="MuJoCo XML path.")
+    parser.add_argument("--device", help="PPO device override: auto, cpu, cuda, or cuda:N.")
     parser.add_argument("--target-selector", choices=["nearest", "risk_aware"], help="Target features/reward-shaping selector.")
     parser.add_argument("--max-steams", type=int, help="Override active steam capacity after curriculum configuration.")
     parser.add_argument("--stochastic", action="store_true")
@@ -72,17 +114,30 @@ def evaluate_episode(env, policy, seed, max_steps, demo_mode=False):
         if terminated or truncated:
             break
 
-    return {
-        "steps": step + 1,
+    steps = step + 1
+    success_count = int(info.get("success_count", 0))
+    spawned_count = int(info.get("spawned_count", 0))
+    cover_latency_steps = float(info.get("cover_latency", 0.0))
+    timing = coverage_timing_metrics(
+        steps=steps,
+        success_count=success_count,
+        spawned_count=spawned_count,
+        cover_latency_steps=cover_latency_steps,
+        step_seconds=env_step_seconds(env),
+    )
+
+    metrics = {
+        "steps": steps,
         "episode_reward": float(total_reward),
         "coverage_rate": float(info.get("coverage_rate", 0.0)),
-        "success_count": int(info.get("success_count", 0)),
-        "spawned_count": int(info.get("spawned_count", 0)),
+        "success_count": success_count,
+        "spawned_count": spawned_count,
         "missed_count": int(info.get("missed_count", 0)),
-        "cover_latency": float(info.get("cover_latency", 0.0)),
+        "cover_latency": cover_latency_steps,
         "last_cover_latency": float(info.get("last_cover_latency", 0.0)),
         "target_distance": float(info.get("target_distance", 0.0)),
         "target_selector": str(info.get("target_selector", "")),
+        "spawn_history_observation_enabled": bool(info.get("spawn_history_observation_enabled", False)),
         "steam_attention_observation_enabled": bool(info.get("steam_attention_observation_enabled", False)),
         "material_map_observation_enabled": bool(info.get("material_map_observation_enabled", False)),
         "selected_target_id": int(info.get("selected_target_id", -1)),
@@ -104,6 +159,13 @@ def evaluate_episode(env, policy, seed, max_steps, demo_mode=False):
         "action_noise_std": float(info.get("action_noise_std", 0.0)),
         "domain_randomization_enabled": bool(info.get("domain_randomization_enabled", False)),
         "spawn_burst_probability": float(info.get("spawn_burst_probability", 0.0)),
+        "thermal_spawn_enabled": bool(info.get("thermal_spawn_enabled", False)),
+        "thermal_hotspot_count": int(info.get("thermal_hotspot_count", 0)),
+        "thermal_background_weight": float(info.get("thermal_background_weight", 0.0)),
+        "thermal_hotspot_strength": float(info.get("thermal_hotspot_strength", 0.0)),
+        "thermal_peak_x": float(info.get("thermal_peak_x", 0.0)),
+        "thermal_peak_y": float(info.get("thermal_peak_y", 0.0)),
+        "thermal_peak_score": float(info.get("thermal_peak_score", 0.0)),
         "mean_material_height": float(info.get("mean_material_height", 0.0)),
         "max_material_height": float(info.get("max_material_height", 0.0)),
         "height_uniformity": float(info.get("height_uniformity", 0.0)),
@@ -114,6 +176,8 @@ def evaluate_episode(env, policy, seed, max_steps, demo_mode=False):
         "action_delta_mean": float(np.mean(action_delta)) if action_delta else 0.0,
         "action_l2_mean": float(np.mean(action_l2)) if action_l2 else 0.0,
     }
+    metrics.update(timing)
+    return metrics
 
 
 def write_rows(path, rows):
@@ -133,6 +197,8 @@ def main():
         config = deep_update(config, checkpoint_config(args.model))
     if args.model_path:
         config["model_path"] = args.model_path
+    if args.device:
+        config["device"] = args.device
     if args.target_selector is not None:
         config["target_selector"] = args.target_selector
     set_global_seeds(args.seed)
@@ -142,6 +208,7 @@ def main():
         max_episode_steps=args.steps,
         target_selector=config.get("target_selector", "risk_aware"),
         steam_attention_observation=config.get("use_steam_attention", False),
+        spawn_history_observation=config.get("use_spawn_history_observation", False),
         material_map_observation=config.get("use_material_map", False),
     )
     configure_env_from_config(env, config)
@@ -174,7 +241,10 @@ def main():
         print(
             f"Eval {episode + 1}/{args.episodes} | {method} | "
             f"stage:{args.stage} | R:{metrics['episode_reward']:.1f} | "
-            f"Cov:{metrics['coverage_rate']:.2f} | Miss:{metrics['missed_count']}",
+            f"Cov:{metrics['coverage_rate']:.2f} | "
+            f"Lat:{metrics['cover_latency_seconds']:.3f}s | "
+            f"Rate:{metrics['covered_per_second']:.2f}/s | "
+            f"Miss:{metrics['missed_count']}",
             flush=True,
         )
 
@@ -182,6 +252,9 @@ def main():
     summary = {
         "episodes": len(rows),
         "coverage_mean": float(np.mean([row["coverage_rate"] for row in rows])) if rows else 0.0,
+        "cover_latency_seconds_mean": float(np.mean([row["cover_latency_seconds"] for row in rows])) if rows else 0.0,
+        "covered_per_second_mean": float(np.mean([row["covered_per_second"] for row in rows])) if rows else 0.0,
+        "per_point_cover_speed_mean": float(np.mean([row["per_point_cover_speed"] for row in rows])) if rows else 0.0,
         "missed_mean": float(np.mean([row["missed_count"] for row in rows])) if rows else 0.0,
         "reward_mean": float(np.mean([row["episode_reward"] for row in rows])) if rows else 0.0,
         "output": str(args.output),

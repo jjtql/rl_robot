@@ -293,6 +293,7 @@ def build_arg_parser():
     parser.add_argument("--domain-randomization", action="store_true")
     parser.add_argument("--domain-randomization-scale", type=float)
     parser.add_argument("--residual-beta", type=float)
+    parser.add_argument("--device", help="Training device override: auto, cpu, cuda, or cuda:N.")
     parser.add_argument("--output", default="runs/scheme_d_paper_suite/commands.txt")
     parser.add_argument("--execute", action="store_true", help="Run commands sequentially. Intended for long monitored jobs.")
     return parser
@@ -343,6 +344,7 @@ def command_for(args, method, seed):
         ("action_noise_std", "--action-noise-std"),
         ("domain_randomization_scale", "--domain-randomization-scale"),
         ("residual_beta", "--residual-beta"),
+        ("device", "--device"),
     ):
         value = getattr(args, attr)
         if value is not None:

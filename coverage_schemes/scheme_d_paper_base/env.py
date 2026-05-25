@@ -60,6 +60,7 @@ class ShangZengEnv(gym.Env):
         max_episode_steps=400,
         target_selector="risk_aware",
         steam_attention_observation=False,
+        spawn_history_observation=False,
         material_map_observation=False,
     ):
         super().__init__()
@@ -81,11 +82,24 @@ class ShangZengEnv(gym.Env):
         self.spawn_cooldown_steps = 55
         self.steam_speed = 0.0
         self.initial_spawn_count = 1
+        self.thermal_spawn_enabled = True
+        self.thermal_hotspot_count = 3
+        self.thermal_hotspot_sigma = 0.22
+        self.thermal_hotspot_strength = 1.8
+        self.thermal_background_weight = 0.28
+        self.thermal_drift_std = 0.006
+        self.thermal_refresh_probability = 0.0025
+        self.thermal_lifetime_steps = 520
+        self.thermal_recent_spawn_radius = 0.18
+        self.thermal_recent_spawn_suppression = 0.55
+        self.thermal_recent_spawn_memory = 12
         self.target_selector = "risk_aware"
         self.set_target_selector(target_selector)
         self.base_obs_dim = 35
+        self.spawn_history_obs_dim = 10
         self.attention_steam_count = 6
         self.attention_steam_dim = 8
+        self.spawn_history_observation_enabled = bool(spawn_history_observation)
         self.steam_attention_observation_enabled = bool(steam_attention_observation)
         self.material_map_observation_enabled = bool(material_map_observation)
         self.material_map_channels = 3
@@ -151,6 +165,7 @@ class ShangZengEnv(gym.Env):
 
         # Action and observation space
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
+        self.base_obs_dim = 35 + (self.spawn_history_obs_dim if self.spawn_history_observation_enabled else 0)
         self.obs_dim = self.base_obs_dim
         if self.steam_attention_observation_enabled:
             self.obs_dim += self.attention_steam_count * self.attention_steam_dim
@@ -161,7 +176,10 @@ class ShangZengEnv(gym.Env):
         # State variables
         self.steams = []
         self.steam_history = deque(maxlen=16)
+        self.thermal_hotspots = []
+        self.recent_spawn_positions = deque(maxlen=self.thermal_recent_spawn_memory)
         self.last_spawn_xy = None
+        self.spawned_this_step_positions = []
         self.last_steam_center = None
         self.steam_trend = np.zeros(2, dtype=np.float32)
         self.rng = np.random.default_rng()
@@ -387,7 +405,9 @@ class ShangZengEnv(gym.Env):
         self.material_height.fill(0.0)
         self.steams = []
         self.steam_history.clear()
+        self.recent_spawn_positions = deque(maxlen=max(int(self.thermal_recent_spawn_memory), 1))
         self.last_spawn_xy = None
+        self.spawned_this_step_positions = []
         self.last_steam_center = None
         self.steam_trend = np.zeros(2, dtype=np.float32)
         self.last_action = np.zeros(3, dtype=np.float32)
@@ -401,9 +421,11 @@ class ShangZengEnv(gym.Env):
         self.last_reward_terms = {}
         self._reset_stats()
         self._apply_domain_randomization()
+        self._initialize_thermal_hotspots()
 
         for _ in range(self.initial_spawn_count):
             self._spawn_steam_from_material()
+        self.spawned_this_step_positions = []
         self._update_steam_trend()
         self._sync_steam_sites()
         self._update_material_visualization()
@@ -416,6 +438,7 @@ class ShangZengEnv(gym.Env):
 
     def step(self, action):
         self.step_count += 1
+        self.spawned_this_step_positions = []
         raw_action = self._preprocess_action(action)
         prev_action = self.last_action.copy()
         smooth_action = self.action_smoothing * prev_action + (1.0 - self.action_smoothing) * raw_action
@@ -423,6 +446,7 @@ class ShangZengEnv(gym.Env):
 
         self._update_steam_motion()
         missed_now = self._remove_expired_steams()
+        self._update_thermal_hotspots()
         self.steps_since_spawn += 1
         self.prev_cover_center = self.cover_center.copy()
         prev_target_dist, _, _ = self._target_steam_metrics(self.cover_center)
@@ -733,6 +757,40 @@ class ShangZengEnv(gym.Env):
         material_map = np.stack([gap, overfill, frontier], axis=0).astype(np.float32)
         return material_map.reshape(-1)
 
+    def _spawn_history_features(self):
+        if not self.spawn_history_observation_enabled:
+            return np.zeros(0, dtype=np.float32)
+
+        if self.last_spawn_xy is None:
+            last_rel = np.zeros(2, dtype=np.float32)
+        else:
+            last_rel = (np.asarray(self.last_spawn_xy, dtype=np.float32) - self.cover_center) / self.pot_radius
+
+        recent_count = len(self.recent_spawn_positions)
+        if recent_count:
+            recent = np.asarray(self.recent_spawn_positions, dtype=np.float32)
+            centroid = recent.mean(axis=0)
+            centroid_rel = (centroid - self.cover_center) / self.pot_radius
+            spread = float(np.mean(np.linalg.norm(recent - centroid, axis=1)) / max(self.pot_radius, 1e-6))
+        else:
+            centroid_rel = np.zeros(2, dtype=np.float32)
+            spread = 0.0
+
+        cooldown = max(int(self.spawn_cooldown_steps), 1)
+        recent_capacity = max(int(self.thermal_recent_spawn_memory), 1)
+        return np.array([
+            float(last_rel[0]),
+            float(last_rel[1]),
+            float(centroid_rel[0]),
+            float(centroid_rel[1]),
+            float(np.clip(spread, 0.0, 1.0)),
+            float(self.steam_trend[0]),
+            float(self.steam_trend[1]),
+            float(np.clip(self.steps_since_spawn / cooldown, 0.0, 1.0)),
+            float(np.clip(len(self.steams) / max(self.max_steams, 1), 0.0, 1.0)),
+            float(np.clip(recent_count / recent_capacity, 0.0, 1.0)),
+        ], dtype=np.float32)
+
     def _get_obs(self):
         """
         精简观测，只保留核心信息：
@@ -822,6 +880,8 @@ class ShangZengEnv(gym.Env):
             qpos,  # 6
             material_obs,  # 4
         ])
+        if self.spawn_history_observation_enabled:
+            base_obs = np.concatenate([base_obs, self._spawn_history_features()])
         if self.steam_attention_observation_enabled:
             obs = np.concatenate([base_obs, self._steam_attention_features()])
         else:
@@ -953,6 +1013,112 @@ class ShangZengEnv(gym.Env):
         self.last_reward_terms = {key: float(value) for key, value in terms.items()}
         return float(sum(terms.values())), covered
 
+    def _reachable_grid_mask(self):
+        mask = self.grid_mask.copy()
+        if self.home_ee_pos is not None:
+            reach_radius = max(0.05, self.max_target_offset - self.spawn_reach_margin)
+            reach_dist = np.linalg.norm(self.grid_world_xy - self.home_ee_pos[:2], axis=-1)
+            mask *= (reach_dist <= reach_radius).astype(np.float32)
+        return mask.astype(np.float32)
+
+    def _sample_thermal_center(self):
+        mask = self._reachable_grid_mask()
+        if float(mask.sum()) <= 0.0:
+            xy = self.pot_center[:2].copy()
+        else:
+            probs = mask.reshape(-1) / float(mask.sum())
+            flat_idx = int(self.rng.choice(mask.size, p=probs))
+            i, j = np.unravel_index(flat_idx, mask.shape)
+            xy = self.grid_world_xy[i, j] + self.rng.normal(0.0, self.cell_half_size * 0.8, size=2)
+        return self._project_xy_into_spawn_workspace(xy)
+
+    def _new_thermal_hotspot(self):
+        lifetime = max(int(self.thermal_lifetime_steps), 1)
+        return {
+            "xy": self._sample_thermal_center(),
+            "age": int(self.rng.integers(0, max(lifetime // 3, 1))),
+            "lifetime": int(max(1, lifetime * self.rng.uniform(0.75, 1.25))),
+            "amp": float(self.rng.uniform(0.75, 1.0)),
+        }
+
+    def _initialize_thermal_hotspots(self):
+        self.thermal_hotspots = []
+        if not self.thermal_spawn_enabled:
+            return
+        for _ in range(max(int(self.thermal_hotspot_count), 0)):
+            self.thermal_hotspots.append(self._new_thermal_hotspot())
+
+    def _update_thermal_hotspots(self):
+        if not self.thermal_spawn_enabled:
+            self.thermal_hotspots = []
+            return
+
+        target_count = max(int(self.thermal_hotspot_count), 0)
+        while len(self.thermal_hotspots) < target_count:
+            self.thermal_hotspots.append(self._new_thermal_hotspot())
+        if len(self.thermal_hotspots) > target_count:
+            self.thermal_hotspots = self.thermal_hotspots[:target_count]
+
+        drift_std = max(float(self.thermal_drift_std), 0.0)
+        refresh_probability = max(float(self.thermal_refresh_probability), 0.0)
+        updated = []
+        for hotspot in self.thermal_hotspots:
+            hotspot["age"] = int(hotspot.get("age", 0)) + 1
+            expired = hotspot["age"] >= int(hotspot.get("lifetime", self.thermal_lifetime_steps))
+            refreshed = self.rng.random() < refresh_probability
+            if expired or refreshed:
+                updated.append(self._new_thermal_hotspot())
+                continue
+            if drift_std > 0.0:
+                hotspot["xy"] = self._project_xy_into_spawn_workspace(
+                    np.asarray(hotspot["xy"], dtype=np.float32)
+                    + self.rng.normal(0.0, drift_std, size=2)
+                )
+            updated.append(hotspot)
+        self.thermal_hotspots = updated
+
+    def _thermal_field(self):
+        if not self.thermal_spawn_enabled or not self.thermal_hotspots:
+            return np.zeros_like(self.grid_mask, dtype=np.float32)
+        sigma = max(float(self.thermal_hotspot_sigma), 1e-4)
+        field = np.zeros_like(self.grid_mask, dtype=np.float32)
+        for hotspot in self.thermal_hotspots:
+            xy = np.asarray(hotspot["xy"], dtype=np.float32)
+            dist2 = np.sum((self.grid_world_xy - xy) ** 2, axis=-1)
+            field += float(hotspot.get("amp", 1.0)) * np.exp(-dist2 / (2.0 * sigma ** 2)).astype(np.float32)
+        field *= self.grid_mask
+        peak = float(field.max())
+        if peak > 1e-8:
+            field /= peak
+        return field.astype(np.float32)
+
+    def _thermal_score_at_xy(self, xy):
+        if not self.thermal_spawn_enabled or not self.thermal_hotspots:
+            return 0.0
+        xy = np.asarray(xy, dtype=np.float32)
+        sigma = max(float(self.thermal_hotspot_sigma), 1e-4)
+        score = 0.0
+        for hotspot in self.thermal_hotspots:
+            dist2 = float(np.sum((xy - np.asarray(hotspot["xy"], dtype=np.float32)) ** 2))
+            score += float(hotspot.get("amp", 1.0)) * float(np.exp(-dist2 / (2.0 * sigma ** 2)))
+        return float(np.clip(score, 0.0, 1.0))
+
+    def _recent_spawn_suppression_field(self):
+        if not self.recent_spawn_positions:
+            return np.ones_like(self.grid_mask, dtype=np.float32)
+        radius = max(float(self.thermal_recent_spawn_radius), 1e-4)
+        suppression = float(np.clip(self.thermal_recent_spawn_suppression, 0.0, 0.95))
+        field = np.ones_like(self.grid_mask, dtype=np.float32)
+        for xy in self.recent_spawn_positions:
+            dist2 = np.sum((self.grid_world_xy - np.asarray(xy, dtype=np.float32)) ** 2, axis=-1)
+            field *= 1.0 - suppression * np.exp(-dist2 / (2.0 * radius ** 2)).astype(np.float32)
+        return np.clip(field, 0.05, 1.0).astype(np.float32)
+
+    def _dominant_thermal_hotspot(self):
+        if not self.thermal_hotspots:
+            return None
+        return max(self.thermal_hotspots, key=lambda hotspot: float(hotspot.get("amp", 1.0)))
+
     def _spawn_steam_from_material(self):
         scores = self._steam_spawn_scores()
         total = float(scores.sum())
@@ -976,6 +1142,8 @@ class ShangZengEnv(gym.Env):
         })
         self.spawned_count += 1
         self.last_spawn_xy = xy.astype(np.float32)
+        self.spawned_this_step_positions.append(xy.astype(np.float32))
+        self.recent_spawn_positions.append(xy.astype(np.float32))
         self.steps_since_spawn = 0
 
     def _steam_spawn_scores(self):
@@ -987,6 +1155,11 @@ class ShangZengEnv(gym.Env):
         ) * 0.25
         local_gap = np.abs(h - neighbor_mean) / (self.target_layer_height + 1e-8)
         scores = (0.15 + low_layer + 0.35 * local_gap) * self.grid_mask
+        if self.thermal_spawn_enabled:
+            heat = self._thermal_field()
+            background = float(np.clip(self.thermal_background_weight, 0.02, 1.0))
+            strength = max(float(self.thermal_hotspot_strength), 0.0)
+            scores *= background + strength * heat
         if self.home_ee_pos is not None:
             reach_radius = max(0.05, self.max_target_offset - self.spawn_reach_margin)
             reach_dist = np.linalg.norm(self.grid_world_xy - self.home_ee_pos[:2], axis=-1)
@@ -994,6 +1167,8 @@ class ShangZengEnv(gym.Env):
         for steam in self.steams:
             dist2 = np.sum((self.grid_world_xy - steam["pos"][:2]) ** 2, axis=-1)
             scores *= 1.0 - 0.75 * np.exp(-dist2 / (2.0 * 0.12 ** 2))
+        if self.thermal_spawn_enabled:
+            scores *= self._recent_spawn_suppression_field()
         return np.maximum(scores, 0.0).astype(np.float32)
 
     def _update_steam_motion(self):
@@ -1155,6 +1330,22 @@ class ShangZengEnv(gym.Env):
         selected_target = self.last_selected_target.copy()
         if target_distance is None:
             target_distance = selected_target["selected_target_distance"]
+        spawned_count = len(self.spawned_this_step_positions)
+        if spawned_count:
+            spawned_xy = np.mean(self.spawned_this_step_positions, axis=0).astype(np.float32)
+            pred_target = self.normalize_xy(spawned_xy)
+            pred_mask = 1.0
+        else:
+            spawned_xy = np.zeros(2, dtype=np.float32)
+            pred_target = np.zeros(2, dtype=np.float32)
+            pred_mask = 0.0
+        dominant_hotspot = self._dominant_thermal_hotspot()
+        if dominant_hotspot is None:
+            thermal_xy = np.zeros(2, dtype=np.float32)
+            thermal_peak_score = 0.0
+        else:
+            thermal_xy = np.asarray(dominant_hotspot["xy"], dtype=np.float32)
+            thermal_peak_score = self._thermal_score_at_xy(thermal_xy)
         return {
             "coverage_rate": float(self.coverage_rate),
             "cover_latency": float(self.average_cover_latency),
@@ -1186,6 +1377,7 @@ class ShangZengEnv(gym.Env):
             "spawned_count": int(self.spawned_count),
             "steam_count": int(len(self.steams)),
             "steam_timeout_enabled": bool(self.steam_timeout_enabled),
+            "spawn_history_observation_enabled": bool(self.spawn_history_observation_enabled),
             "steam_attention_observation_enabled": bool(self.steam_attention_observation_enabled),
             "material_map_observation_enabled": bool(self.material_map_observation_enabled),
             "potential_shaping_enabled": bool(self.potential_shaping_enabled),
@@ -1199,9 +1391,19 @@ class ShangZengEnv(gym.Env):
             "domain_randomization_enabled": bool(self.domain_randomization_enabled),
             "domain_randomization_scale": float(self.domain_randomization_scale),
             "spawn_burst_probability": float(self.spawn_burst_probability),
+            "thermal_spawn_enabled": bool(self.thermal_spawn_enabled),
+            "thermal_hotspot_count": int(len(self.thermal_hotspots)),
+            "thermal_background_weight": float(self.thermal_background_weight),
+            "thermal_hotspot_strength": float(self.thermal_hotspot_strength),
+            "thermal_peak_x": float(thermal_xy[0]),
+            "thermal_peak_y": float(thermal_xy[1]),
+            "thermal_peak_score": float(thermal_peak_score),
+            "spawned_this_step": int(spawned_count),
+            "spawned_this_step_x": float(spawned_xy[0]),
+            "spawned_this_step_y": float(spawned_xy[1]),
             "material": float(self.material),
             "covered": bool(covered),
             "reward_terms": self.last_reward_terms.copy(),
-            "pred_target": np.zeros(2, dtype=np.float32),
-            "pred_mask": 0.0,
+            "pred_target": pred_target,
+            "pred_mask": pred_mask,
         }

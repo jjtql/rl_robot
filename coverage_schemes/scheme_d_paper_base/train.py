@@ -193,11 +193,14 @@ def build_arg_parser():
     parser.add_argument("--ppo-entropy-end", type=float, help="Final entropy coefficient.")
     parser.add_argument("--ppo-entropy-decay-steps", type=int, help="Steps over which entropy coefficient is annealed.")
     parser.add_argument("--ppo-max-grad-norm", type=float, help="PPO gradient clipping norm.")
+    parser.add_argument("--pred-coef", type=float, help="Auxiliary next-steam prediction loss coefficient.")
+    parser.add_argument("--prediction-horizon-steps", type=int, help="Retroactively label this many pre-spawn steps for prediction.")
     parser.add_argument("--bc-supervised-coef", type=float, help="Auxiliary behavior-cloning loss coefficient during PPO.")
     parser.add_argument("--bc-supervised-min-coef", type=float, help="Minimum auxiliary BC loss coefficient after decay.")
     parser.add_argument("--bc-supervised-decay-steps", type=int, help="Steps over which auxiliary BC loss decays.")
     parser.add_argument("--target-selector", choices=TARGET_SELECTOR_CHOICES, help="Target features/reward-shaping selector.")
     parser.add_argument("--steam-attention", action="store_true", help="Use a steam-set attention encoder before LSTM PPO.")
+    parser.add_argument("--spawn-history-observation", action="store_true", help="Append recent steam spawn history features for LSTM prediction.")
     parser.add_argument("--material-map", action="store_true", help="Append a compact material/frontier map and use the attention-map PPO encoder.")
     parser.add_argument("--material-tv-reward", action="store_true", help="Reward reductions in material hole/TV/overfill loss.")
     parser.add_argument("--material-tv-reward-gain", type=float, help="Gain for material TV/quality shaping.")
@@ -212,10 +215,22 @@ def build_arg_parser():
     parser.add_argument("--action-noise-std", type=float, help="Stddev of Gaussian action noise inside the environment.")
     parser.add_argument("--domain-randomization", action="store_true", help="Randomize motion/material parameters at episode reset.")
     parser.add_argument("--domain-randomization-scale", type=float, help="Relative randomization scale.")
+    parser.add_argument("--no-thermal-spawn", action="store_true", help="Disable high-temperature-region driven steam spawning.")
+    parser.add_argument("--thermal-hotspot-count", type=int, help="Number of latent high-temperature regions.")
+    parser.add_argument("--thermal-hotspot-sigma", type=float, help="Spatial radius of each high-temperature region.")
+    parser.add_argument("--thermal-hotspot-strength", type=float, help="Spawn weighting strength for high-temperature regions.")
+    parser.add_argument("--thermal-background-weight", type=float, help="Non-hot-region spawn floor to keep background steam events.")
+    parser.add_argument("--thermal-drift-std", type=float, help="Per-step random-walk drift of high-temperature regions.")
+    parser.add_argument("--thermal-refresh-probability", type=float, help="Per-step probability of refreshing each high-temperature region.")
+    parser.add_argument("--thermal-lifetime-steps", type=int, help="Nominal lifetime of a high-temperature region.")
+    parser.add_argument("--thermal-recent-spawn-radius", type=float, help="Radius used to suppress repeated spawns at the same location.")
+    parser.add_argument("--thermal-recent-spawn-suppression", type=float, help="Strength of recent-spawn suppression.")
+    parser.add_argument("--thermal-recent-spawn-memory", type=int, help="Number of recent spawn locations used for suppression.")
     parser.add_argument("--residual-policy", action="store_true", help="Train the actor as a residual around a rule/planner base controller.")
     parser.add_argument("--residual-base-policy", choices=BC_POLICY_CHOICES, help="Base controller for residual PPO.")
     parser.add_argument("--residual-beta", type=float, help="Scale applied to the learned residual action.")
     parser.add_argument("--no-residual-guard", action="store_true", help="Disable residual direction guard.")
+    parser.add_argument("--device", help="Training device: auto, cpu, cuda, or cuda:N.")
     parser.add_argument("--bc-episodes", type=int, help="Behavior cloning warm-start episodes.")
     parser.add_argument("--bc-epochs", type=int, help="Behavior cloning epochs.")
     parser.add_argument("--bc-policy", choices=BC_POLICY_CHOICES, help="Rule expert used for behavior cloning.")
@@ -248,14 +263,27 @@ def apply_cli_overrides(config, args):
         "ppo_entropy_end",
         "ppo_entropy_decay_steps",
         "ppo_max_grad_norm",
+        "pred_coef",
+        "prediction_horizon_steps",
         "bc_supervised_coef",
         "bc_supervised_min_coef",
         "bc_supervised_decay_steps",
         "action_delay_steps",
         "action_noise_std",
         "domain_randomization_scale",
+        "thermal_hotspot_count",
+        "thermal_hotspot_sigma",
+        "thermal_hotspot_strength",
+        "thermal_background_weight",
+        "thermal_drift_std",
+        "thermal_refresh_probability",
+        "thermal_lifetime_steps",
+        "thermal_recent_spawn_radius",
+        "thermal_recent_spawn_suppression",
+        "thermal_recent_spawn_memory",
         "residual_base_policy",
         "residual_beta",
+        "device",
     ):
         value = getattr(args, key)
         if value is not None:
@@ -264,6 +292,9 @@ def apply_cli_overrides(config, args):
         config["target_selector"] = args.target_selector
     if args.steam_attention:
         config["use_steam_attention"] = True
+        config["use_lstm"] = True
+    if args.spawn_history_observation:
+        config["use_spawn_history_observation"] = True
         config["use_lstm"] = True
     if args.material_map:
         config["use_material_map"] = True
@@ -291,6 +322,8 @@ def apply_cli_overrides(config, args):
         config["action_smoothing_penalty"] = False
     if args.domain_randomization:
         config["domain_randomization"] = True
+    if args.no_thermal_spawn:
+        config["thermal_spawn"] = False
     if args.residual_policy:
         config["residual_policy"] = True
     if args.no_residual_guard:
@@ -335,6 +368,19 @@ def configure_env_from_config(env, config):
     env.action_noise_std = float(config.get("action_noise_std", 0.0))
     env.domain_randomization_enabled = bool(config.get("domain_randomization", False))
     env.domain_randomization_scale = float(config.get("domain_randomization_scale", env.domain_randomization_scale))
+    env.thermal_spawn_enabled = bool(config.get("thermal_spawn", True))
+    env.thermal_hotspot_count = int(config.get("thermal_hotspot_count", env.thermal_hotspot_count))
+    env.thermal_hotspot_sigma = float(config.get("thermal_hotspot_sigma", env.thermal_hotspot_sigma))
+    env.thermal_hotspot_strength = float(config.get("thermal_hotspot_strength", env.thermal_hotspot_strength))
+    env.thermal_background_weight = float(config.get("thermal_background_weight", env.thermal_background_weight))
+    env.thermal_drift_std = float(config.get("thermal_drift_std", env.thermal_drift_std))
+    env.thermal_refresh_probability = float(config.get("thermal_refresh_probability", env.thermal_refresh_probability))
+    env.thermal_lifetime_steps = int(config.get("thermal_lifetime_steps", env.thermal_lifetime_steps))
+    env.thermal_recent_spawn_radius = float(config.get("thermal_recent_spawn_radius", env.thermal_recent_spawn_radius))
+    env.thermal_recent_spawn_suppression = float(
+        config.get("thermal_recent_spawn_suppression", env.thermal_recent_spawn_suppression)
+    )
+    env.thermal_recent_spawn_memory = int(config.get("thermal_recent_spawn_memory", env.thermal_recent_spawn_memory))
     return env
 
 
@@ -383,6 +429,8 @@ def save_checkpoint(agent, ep, config, run_path):
             "use_lstm": agent.use_lstm,
             "use_steam_attention": agent.use_steam_attention,
             "use_material_map": agent.use_material_map,
+            "base_obs_dim": agent.base_obs_dim,
+            "device": str(agent.device),
             "train_steps": agent.train_steps,
         },
         f"{prefix}_{ep}_full.pt",
@@ -426,10 +474,12 @@ def train(config, run_path):
         max_episode_steps=config["episode_steps"],
         target_selector=config.get("target_selector", "risk_aware"),
         steam_attention_observation=config.get("use_steam_attention", False),
+        spawn_history_observation=config.get("use_spawn_history_observation", False),
         material_map_observation=config.get("use_material_map", False),
     )
     configure_env_from_config(env, config)
     obs_dim = env.observation_space.shape[0]
+    config["base_obs_dim"] = int(env.base_obs_dim)
     agent = PPOAgent(
         obs_dim,
         env.action_space.shape[0],
@@ -437,6 +487,7 @@ def train(config, run_path):
         use_lstm=config.get("use_lstm", True),
         use_steam_attention=config.get("use_steam_attention", False),
         use_material_map=config.get("use_material_map", False),
+        base_obs_dim=config.get("base_obs_dim", 35),
         lr=config.get("ppo_lr", 1e-4),
         ppo_epochs=config.get("ppo_epochs", 4),
         clip_param=config.get("ppo_clip", 0.12),
@@ -447,10 +498,13 @@ def train(config, run_path):
         entropy_coef_end=config.get("ppo_entropy_end", 0.0005),
         entropy_decay_steps=config.get("ppo_entropy_decay_steps", 240000),
         max_grad_norm=config.get("ppo_max_grad_norm", 0.35),
+        pred_coef=config.get("pred_coef", 0.0),
         bc_supervised_coef=config.get("bc_supervised_coef", 0.03),
         bc_supervised_min_coef=config.get("bc_supervised_min_coef", 0.0),
         bc_supervised_decay_steps=config.get("bc_supervised_decay_steps", 240000),
+        device=config.get("device", "auto"),
     )
+    config["device"] = str(agent.device)
     if not config.get("action_smoothing_penalty", True):
         agent.smooth_coef = 0.0
         agent.action_l2_coef = 0.0
@@ -518,12 +572,18 @@ def train(config, run_path):
                 f"Target selector: {env.target_selector}\n"
                 f"LSTM: {agent.use_lstm}\n"
                 f"Steam attention: {agent.use_steam_attention}\n"
+                f"Spawn history obs: {config.get('use_spawn_history_observation', False)}\n"
                 f"Material map: {agent.use_material_map}\n"
+                f"Device: {agent.device}\n"
+                f"Prediction coef/horizon: {agent.pred_coef}/{config.get('prediction_horizon_steps', 0)}\n"
                 f"Material TV reward: {env.material_tv_reward_enabled}\n"
                 f"Residual policy: {config.get('residual_policy', False)}\n"
                 f"Residual base: {config.get('residual_base_policy', 'risk_aware')}\n"
                 f"Action delay/noise: {env.action_delay_steps}/{env.action_noise_std}\n"
                 f"Domain randomization: {env.domain_randomization_enabled}\n"
+                f"Thermal spawn: {env.thermal_spawn_enabled} "
+                f"(hotspots={env.thermal_hotspot_count}, bg={env.thermal_background_weight}, "
+                f"strength={env.thermal_hotspot_strength})\n"
                 f"{'='*50}",
                 flush=True,
             )
@@ -545,6 +605,7 @@ def train(config, run_path):
                 previous_missed = info.get("missed_count", 0)
                 previous_action = np.zeros(env.action_space.shape[0], dtype=np.float32)
                 previous_env_action = np.zeros(env.action_space.shape[0], dtype=np.float32)
+                episode_memory_indices = []
 
                 for _ in range(config["episode_steps"]):
                     hidden_reset = float(hx is None or cx is None)
@@ -577,6 +638,14 @@ def train(config, run_path):
                     memory["pred_mask"].append(info["pred_mask"])
                     memory["bc_a"].append(bc_action_for_loss)
                     memory["bc_mask"].append(1.0 if env.steams else 0.0)
+                    episode_memory_indices.append(len(memory["pred_target"]) - 1)
+
+                    if config.get("pred_coef", 0.0) > 0.0 and info.get("pred_mask", 0.0) > 0.0:
+                        horizon = max(int(config.get("prediction_horizon_steps", 0)), 1)
+                        pred_target = np.asarray(info["pred_target"], dtype=np.float32).copy()
+                        for mem_idx in episode_memory_indices[-horizon:]:
+                            memory["pred_target"][mem_idx] = pred_target
+                            memory["pred_mask"][mem_idx] = 1.0
 
                     ep_action_delta.append(float(np.linalg.norm(a - previous_env_action)))
                     ep_action_l2.append(float(np.dot(a, a)))
@@ -600,6 +669,7 @@ def train(config, run_path):
                         memory["v"].append(last_v)
                         last_update_stats = agent.update(memory)
                         memory = new_memory()
+                        episode_memory_indices = []
                         logger.log_event("ppo_update", {"total_steps": total_steps, **last_update_stats})
 
                     if terminated or truncated:
@@ -645,7 +715,9 @@ def train(config, run_path):
                     "selected_target_risk_score": float(info.get("selected_target_risk_score", 0.0)),
                     "use_lstm": bool(agent.use_lstm),
                     "use_steam_attention": bool(agent.use_steam_attention),
+                    "use_spawn_history_observation": bool(config.get("use_spawn_history_observation", False)),
                     "use_material_map": bool(agent.use_material_map),
+                    "device": str(agent.device),
                     "residual_policy": bool(config.get("residual_policy", False)),
                     "residual_base_policy": str(config.get("residual_base_policy", "")),
                     "residual_beta": float(config.get("residual_beta", 0.0)),
@@ -661,6 +733,13 @@ def train(config, run_path):
                     "action_noise_std": float(info.get("action_noise_std", 0.0)),
                     "domain_randomization_enabled": bool(info.get("domain_randomization_enabled", False)),
                     "spawn_burst_probability": float(info.get("spawn_burst_probability", 0.0)),
+                    "thermal_spawn_enabled": bool(info.get("thermal_spawn_enabled", False)),
+                    "thermal_hotspot_count": int(info.get("thermal_hotspot_count", 0)),
+                    "thermal_background_weight": float(info.get("thermal_background_weight", 0.0)),
+                    "thermal_hotspot_strength": float(info.get("thermal_hotspot_strength", 0.0)),
+                    "thermal_peak_x": float(info.get("thermal_peak_x", 0.0)),
+                    "thermal_peak_y": float(info.get("thermal_peak_y", 0.0)),
+                    "thermal_peak_score": float(info.get("thermal_peak_score", 0.0)),
                     "mean_material_height": float(info.get("mean_material_height", 0.0)),
                     "height_uniformity": float(info.get("height_uniformity", 0.0)),
                     "overfill_penalty": float(info.get("overfill_penalty", 0.0)),

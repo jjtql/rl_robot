@@ -6,7 +6,7 @@ from .algo import PPOAgent
 
 
 def load_checkpoint(agent, model_path):
-    checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+    checkpoint = torch.load(model_path, map_location=agent.device, weights_only=False)
     if isinstance(checkpoint, dict) and "model" in checkpoint:
         agent.model.load_state_dict(checkpoint["model"])
         if "icm" in checkpoint:
@@ -145,6 +145,8 @@ class PPOPolicy:
             use_lstm=config.get("use_lstm", True),
             use_steam_attention=config.get("use_steam_attention", False),
             use_material_map=config.get("use_material_map", False),
+            base_obs_dim=getattr(env, "base_obs_dim", config.get("base_obs_dim", 35)),
+            device=config.get("device", "auto"),
         )
         load_checkpoint(self.agent, model_path)
         self.agent.model.eval()

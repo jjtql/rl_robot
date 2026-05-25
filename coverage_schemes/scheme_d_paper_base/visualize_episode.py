@@ -142,6 +142,7 @@ def main():
         max_episode_steps=args.steps,
         target_selector=config.get("target_selector", "risk_aware"),
         steam_attention_observation=config.get("use_steam_attention", False),
+        spawn_history_observation=config.get("use_spawn_history_observation", False),
         material_map_observation=config.get("use_material_map", False),
     )
     configure_env_from_config(env, config)

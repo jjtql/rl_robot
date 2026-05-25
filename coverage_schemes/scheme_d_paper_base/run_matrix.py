@@ -19,6 +19,7 @@ def build_arg_parser():
     parser.add_argument("--config", help="Optional JSON config.")
     parser.add_argument("--model", help="Checkpoint for PPO policy.")
     parser.add_argument("--model-path", help="MuJoCo XML path.")
+    parser.add_argument("--device", help="PPO device override: auto, cpu, cuda, or cuda:N.")
     parser.add_argument("--target-selector", choices=["nearest", "risk_aware"], help="Target features/reward-shaping selector.")
     parser.add_argument("--max-steams", help="Comma-separated active steam capacities for generalization tests, e.g. 3,4,6.")
     parser.add_argument("--policies", default="random,nearest,oldest,distance_age,risk_aware,dynamic_weighted,horizon2,horizon3,aco_tsp,ppo")
@@ -38,6 +39,11 @@ def summarize(rows):
         "coverage_rate",
         "missed_count",
         "cover_latency",
+        "cover_latency_seconds",
+        "per_point_cover_speed",
+        "covered_per_second",
+        "spawned_per_second",
+        "covered_per_100_steps",
         "target_distance",
         "selected_target_risk_score",
         "height_uniformity",
@@ -71,6 +77,8 @@ def main():
         config = deep_update(config, checkpoint_config(args.model))
     if args.model_path:
         config["model_path"] = args.model_path
+    if args.device:
+        config["device"] = args.device
     if args.target_selector is not None:
         config["target_selector"] = args.target_selector
 
@@ -96,6 +104,7 @@ def main():
                         max_episode_steps=args.steps,
                         target_selector=config.get("target_selector", "risk_aware"),
                         steam_attention_observation=config.get("use_steam_attention", False),
+                        spawn_history_observation=config.get("use_spawn_history_observation", False),
                         material_map_observation=config.get("use_material_map", False),
                     )
                     configure_env_from_config(env, config)
@@ -140,6 +149,8 @@ def main():
                     print(
                         f"{policy_name} | {stage} | max_steams {env.max_steams} | seed {seed} | "
                         f"R:{summary['episode_reward_mean']:.2f} | Cov:{summary['coverage_rate_mean']:.2f} | "
+                        f"Lat:{summary['cover_latency_seconds_mean']:.3f}s | "
+                        f"Rate:{summary['covered_per_second_mean']:.2f}/s | "
                         f"Miss:{summary['missed_count_mean']:.2f}",
                         flush=True,
                     )
