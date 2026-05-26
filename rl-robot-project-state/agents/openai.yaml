@@ -1,0 +1,4 @@
+interface:
+  display_name: "RL Robot Project State"
+  short_description: "Inspect rl_robot runs and repo state."
+  default_prompt: "Use this skill to inspect rl_robot runs, summarize results, evaluate artifacts, and preserve repository conventions."

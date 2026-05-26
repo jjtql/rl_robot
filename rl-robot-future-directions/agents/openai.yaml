@@ -1,0 +1,4 @@
+interface:
+  display_name: "RL Robot Future Directions"
+  short_description: "Plan rl_robot paper experiments."
+  default_prompt: "Use this skill to plan rl_robot experiments, publication claims, baselines, ablations, and future research steps."
