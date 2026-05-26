@@ -63,6 +63,17 @@ def configure_env_from_config(env, config):
         config.get("thermal_recent_spawn_suppression", env.thermal_recent_spawn_suppression)
     )
     env.thermal_recent_spawn_memory = int(config.get("thermal_recent_spawn_memory", env.thermal_recent_spawn_memory))
+    env.spawn_history_observation_enabled = bool(
+        config.get("use_spawn_history_observation", env.spawn_history_observation_enabled)
+    )
+    env.thermal_context_observation_enabled = bool(config.get("use_thermal_context_observation", False))
+    env.steam_attention_observation_enabled = bool(
+        config.get("use_steam_attention", env.steam_attention_observation_enabled)
+    )
+    env.material_map_observation_enabled = bool(config.get("use_material_map", env.material_map_observation_enabled))
+    env.attention_steam_count = int(config.get("attention_steam_count", env.attention_steam_count))
+    env.attention_steam_dim = int(config.get("attention_steam_dim", env.attention_steam_dim))
+    env.refresh_observation_space()
     return env
 
 
@@ -103,10 +114,14 @@ def evaluate_episode(env, policy, seed, max_steps, demo_mode=False):
         action_l2.append(float(np.dot(action, action)))
         previous_action = action.copy()
 
-        if hasattr(policy, "reset_recurrent") and (
-            info.get("covered", False) or info.get("missed_count", 0) > previous_missed
-        ):
-            policy.reset_recurrent()
+        if hasattr(policy, "reset_recurrent"):
+            reset_for_cover = info.get("covered", False) and getattr(policy, "recurrent_reset_on_cover", True)
+            reset_for_miss = (
+                info.get("missed_count", 0) > previous_missed
+                and getattr(policy, "recurrent_reset_on_miss", True)
+            )
+            if reset_for_cover or reset_for_miss:
+                policy.reset_recurrent()
         previous_missed = info.get("missed_count", 0)
 
         if demo_mode and terminated:
@@ -138,6 +153,7 @@ def evaluate_episode(env, policy, seed, max_steps, demo_mode=False):
         "target_distance": float(info.get("target_distance", 0.0)),
         "target_selector": str(info.get("target_selector", "")),
         "spawn_history_observation_enabled": bool(info.get("spawn_history_observation_enabled", False)),
+        "thermal_context_observation_enabled": bool(info.get("thermal_context_observation_enabled", False)),
         "steam_attention_observation_enabled": bool(info.get("steam_attention_observation_enabled", False)),
         "material_map_observation_enabled": bool(info.get("material_map_observation_enabled", False)),
         "selected_target_id": int(info.get("selected_target_id", -1)),
@@ -149,6 +165,7 @@ def evaluate_episode(env, policy, seed, max_steps, demo_mode=False):
         "selected_target_distance_score": float(info.get("selected_target_distance_score", 0.0)),
         "selected_target_material_score": float(info.get("selected_target_material_score", 0.0)),
         "selected_target_reachability_score": float(info.get("selected_target_reachability_score", 0.0)),
+        "selected_target_thermal_score": float(info.get("selected_target_thermal_score", 0.0)),
         "selected_target_risk_score": float(info.get("selected_target_risk_score", 0.0)),
         "potential_shaping_enabled": bool(info.get("potential_shaping_enabled", True)),
         "best_progress_enabled": bool(info.get("best_progress_enabled", True)),
@@ -209,7 +226,10 @@ def main():
         target_selector=config.get("target_selector", "risk_aware"),
         steam_attention_observation=config.get("use_steam_attention", False),
         spawn_history_observation=config.get("use_spawn_history_observation", False),
+        thermal_context_observation=config.get("use_thermal_context_observation", False),
         material_map_observation=config.get("use_material_map", False),
+        attention_steam_count=config.get("attention_steam_count", 6),
+        attention_steam_dim=config.get("attention_steam_dim", 8),
     )
     configure_env_from_config(env, config)
     env.configure_curriculum(args.stage)
@@ -220,7 +240,13 @@ def main():
         env.target_success_count = max(env.target_success_count, args.steps)
         env.target_coverage = 1.0
 
-    policy = build_policy(args.policy, env, model_path=args.model, deterministic=not args.stochastic)
+    policy = build_policy(
+        args.policy,
+        env,
+        model_path=args.model,
+        deterministic=not args.stochastic,
+        config_override=config,
+    )
     method = args.method or policy.name
     rows = []
     for episode in range(args.episodes):

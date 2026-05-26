@@ -46,6 +46,7 @@ def summarize(rows):
         "covered_per_100_steps",
         "target_distance",
         "selected_target_risk_score",
+        "selected_target_thermal_score",
         "height_uniformity",
         "overfill_penalty",
         "material_hole_loss",
@@ -105,7 +106,10 @@ def main():
                         target_selector=config.get("target_selector", "risk_aware"),
                         steam_attention_observation=config.get("use_steam_attention", False),
                         spawn_history_observation=config.get("use_spawn_history_observation", False),
+                        thermal_context_observation=config.get("use_thermal_context_observation", False),
                         material_map_observation=config.get("use_material_map", False),
+                        attention_steam_count=config.get("attention_steam_count", 6),
+                        attention_steam_dim=config.get("attention_steam_dim", 8),
                     )
                     configure_env_from_config(env, config)
                     env.configure_curriculum(stage)
@@ -116,7 +120,13 @@ def main():
                         env.target_success_count = max(env.target_success_count, args.steps)
                         env.target_coverage = 1.0
 
-                    policy = build_policy(policy_name, env, model_path=args.model, deterministic=not args.stochastic)
+                    policy = build_policy(
+                        policy_name,
+                        env,
+                        model_path=args.model,
+                        deterministic=not args.stochastic,
+                        config_override=config,
+                    )
                     policy_rows = []
                     for episode in range(args.episodes):
                         ep_seed = seed * 10_000 + episode

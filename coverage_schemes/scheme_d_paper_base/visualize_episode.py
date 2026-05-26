@@ -52,6 +52,7 @@ def record_row(step, reward, env, info):
         "selected_target_distance_score": float(info.get("selected_target_distance_score", 0.0)),
         "selected_target_material_score": float(info.get("selected_target_material_score", 0.0)),
         "selected_target_reachability_score": float(info.get("selected_target_reachability_score", 0.0)),
+        "selected_target_thermal_score": float(info.get("selected_target_thermal_score", 0.0)),
         "coverage_rate": float(info.get("coverage_rate", 0.0)),
         "success_count": int(info.get("success_count", 0)),
         "spawned_count": int(info.get("spawned_count", 0)),
@@ -143,7 +144,10 @@ def main():
         target_selector=config.get("target_selector", "risk_aware"),
         steam_attention_observation=config.get("use_steam_attention", False),
         spawn_history_observation=config.get("use_spawn_history_observation", False),
+        thermal_context_observation=config.get("use_thermal_context_observation", False),
         material_map_observation=config.get("use_material_map", False),
+        attention_steam_count=config.get("attention_steam_count", 6),
+        attention_steam_dim=config.get("attention_steam_dim", 8),
     )
     configure_env_from_config(env, config)
     env.configure_curriculum(args.stage)
@@ -154,7 +158,13 @@ def main():
         env.target_success_count = max(env.target_success_count, args.steps)
         env.target_coverage = 1.0
 
-    policy = build_policy(args.policy, env, model_path=args.model, deterministic=not args.stochastic)
+    policy = build_policy(
+        args.policy,
+        env,
+        model_path=args.model,
+        deterministic=not args.stochastic,
+        config_override=config,
+    )
     obs, info = env.reset(seed=args.seed)
     policy.reset()
     rows = [record_row(0, 0.0, env, info)]

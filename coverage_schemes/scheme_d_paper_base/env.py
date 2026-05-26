@@ -61,7 +61,10 @@ class ShangZengEnv(gym.Env):
         target_selector="risk_aware",
         steam_attention_observation=False,
         spawn_history_observation=False,
+        thermal_context_observation=False,
         material_map_observation=False,
+        attention_steam_count=6,
+        attention_steam_dim=8,
     ):
         super().__init__()
         if model_path is None:
@@ -97,9 +100,13 @@ class ShangZengEnv(gym.Env):
         self.set_target_selector(target_selector)
         self.base_obs_dim = 35
         self.spawn_history_obs_dim = 10
-        self.attention_steam_count = 6
-        self.attention_steam_dim = 8
+        self.thermal_context_obs_dim = 8
+        self.attention_steam_count = int(attention_steam_count)
+        self.attention_steam_dim = int(attention_steam_dim)
+        if self.attention_steam_dim != 8:
+            raise ValueError("attention_steam_dim must be 8 for the current steam feature schema")
         self.spawn_history_observation_enabled = bool(spawn_history_observation)
+        self.thermal_context_observation_enabled = bool(thermal_context_observation)
         self.steam_attention_observation_enabled = bool(steam_attention_observation)
         self.material_map_observation_enabled = bool(material_map_observation)
         self.material_map_channels = 3
@@ -165,13 +172,7 @@ class ShangZengEnv(gym.Env):
 
         # Action and observation space
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
-        self.base_obs_dim = 35 + (self.spawn_history_obs_dim if self.spawn_history_observation_enabled else 0)
-        self.obs_dim = self.base_obs_dim
-        if self.steam_attention_observation_enabled:
-            self.obs_dim += self.attention_steam_count * self.attention_steam_dim
-        if self.material_map_observation_enabled:
-            self.obs_dim += self.material_map_channels * self.grid_size * self.grid_size
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32)
+        self.refresh_observation_space()
 
         # State variables
         self.steams = []
@@ -206,6 +207,21 @@ class ShangZengEnv(gym.Env):
         self._cache_material_geoms()
         self._cache_steam_sites()
         self.configure_curriculum("single_easy")
+
+    def refresh_observation_space(self):
+        if int(self.attention_steam_dim) != 8:
+            raise ValueError("attention_steam_dim must be 8 for the current steam feature schema")
+        self.base_obs_dim = 35
+        if self.spawn_history_observation_enabled:
+            self.base_obs_dim += self.spawn_history_obs_dim
+        if self.thermal_context_observation_enabled:
+            self.base_obs_dim += self.thermal_context_obs_dim
+        self.obs_dim = self.base_obs_dim
+        if self.steam_attention_observation_enabled:
+            self.obs_dim += self.attention_steam_count * self.attention_steam_dim
+        if self.material_map_observation_enabled:
+            self.obs_dim += self.material_map_channels * self.grid_size * self.grid_size
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32)
 
     def configure_curriculum(self, stage):
         if stage == "single_easy":
@@ -628,6 +644,7 @@ class ShangZengEnv(gym.Env):
             "selected_target_distance_score": 0.0,
             "selected_target_material_score": 0.0,
             "selected_target_reachability_score": 0.0,
+            "selected_target_thermal_score": 0.0,
             "selected_target_risk_score": 0.0,
         }
 
@@ -645,15 +662,17 @@ class ShangZengEnv(gym.Env):
             * np.exp(-(grid_dist ** 2) / (2.0 * self.deposit_sigma ** 2))
         ))
         material_score = float(np.clip(local_gap / max(self.target_layer_height, 1e-6), 0.0, 1.0))
+        thermal_score = float(np.clip(self._thermal_score_at_xy(cell_xy), 0.0, 1.0))
 
         reach_offset = float(np.linalg.norm(cell_xy - self.home_ee_pos[:2])) if self.home_ee_pos is not None else 0.0
         reachability_score = float(1.0 - np.clip(reach_offset / max(self.max_target_offset, 1e-6), 0.0, 1.0))
 
         risk_score = float(
-            0.40 * age_score
-            + 0.30 * distance_score
-            + 0.20 * material_score
+            0.35 * age_score
+            + 0.25 * distance_score
+            + 0.15 * material_score
             + 0.10 * reachability_score
+            + 0.15 * thermal_score
         )
         return {
             "selected_target_id": int(steam.get("id", -1)),
@@ -664,6 +683,7 @@ class ShangZengEnv(gym.Env):
             "selected_target_distance_score": distance_score,
             "selected_target_material_score": material_score,
             "selected_target_reachability_score": reachability_score,
+            "selected_target_thermal_score": thermal_score,
             "selected_target_risk_score": risk_score,
         }
 
@@ -724,6 +744,7 @@ class ShangZengEnv(gym.Env):
                         0.40 * risk["selected_target_age_score"]
                         + 0.30 * risk["selected_target_distance_score"]
                         + 0.10 * risk["selected_target_reachability_score"]
+                        + 0.20 * risk["selected_target_thermal_score"]
                     )
                 )
                 features.extend([
@@ -791,6 +812,42 @@ class ShangZengEnv(gym.Env):
             float(np.clip(recent_count / recent_capacity, 0.0, 1.0)),
         ], dtype=np.float32)
 
+    def _thermal_context_features(self, target_xy=None):
+        if not self.thermal_context_observation_enabled:
+            return np.zeros(0, dtype=np.float32)
+
+        dominant_hotspot = self._dominant_thermal_hotspot()
+        if dominant_hotspot is None:
+            hotspot_rel = np.zeros(2, dtype=np.float32)
+            hotspot_score = 0.0
+        else:
+            hotspot_xy = np.asarray(dominant_hotspot["xy"], dtype=np.float32)
+            hotspot_rel = (hotspot_xy - self.cover_center) / max(self.pot_radius, 1e-6)
+            hotspot_score = self._thermal_score_at_xy(hotspot_xy)
+
+        cover_heat = self._thermal_score_at_xy(self.cover_center)
+        target_heat = self._thermal_score_at_xy(target_xy) if target_xy is not None else 0.0
+        cooldown = max(int(self.spawn_cooldown_steps), 1)
+        spawn_ready = float(np.clip(self.steps_since_spawn / cooldown, 0.0, 1.0))
+        active_room = float(np.clip(1.0 - len(self.steams) / max(self.max_steams, 1), 0.0, 1.0))
+        spawn_pressure = float(np.clip(self.spawn_probability * cooldown * spawn_ready * active_room, 0.0, 1.0))
+        if self.spawn_burst_max >= self.spawn_burst_min:
+            burst_mean = 0.5 * (self.spawn_burst_min + self.spawn_burst_max)
+        else:
+            burst_mean = 1.0
+        burst_pressure = float(np.clip(self.spawn_burst_probability * max(burst_mean - 1.0, 0.0), 0.0, 1.0))
+
+        return np.array([
+            float(hotspot_rel[0]),
+            float(hotspot_rel[1]),
+            float(np.clip(hotspot_score, 0.0, 1.0)),
+            float(np.clip(cover_heat, 0.0, 1.0)),
+            float(np.clip(target_heat, 0.0, 1.0)),
+            spawn_ready,
+            spawn_pressure,
+            burst_pressure,
+        ], dtype=np.float32)
+
     def _get_obs(self):
         """
         精简观测，只保留核心信息：
@@ -838,6 +895,7 @@ class ShangZengEnv(gym.Env):
                 0.40 * target_info["selected_target_age_score"]
                 + 0.30 * target_info["selected_target_distance_score"]
                 + 0.10 * target_info["selected_target_reachability_score"]
+                + 0.20 * target_info["selected_target_thermal_score"]
             )
         )
         target_risk_feats = np.array([
@@ -882,6 +940,8 @@ class ShangZengEnv(gym.Env):
         ])
         if self.spawn_history_observation_enabled:
             base_obs = np.concatenate([base_obs, self._spawn_history_features()])
+        if self.thermal_context_observation_enabled:
+            base_obs = np.concatenate([base_obs, self._thermal_context_features(target_xy)])
         if self.steam_attention_observation_enabled:
             obs = np.concatenate([base_obs, self._steam_attention_features()])
         else:
@@ -1362,6 +1422,7 @@ class ShangZengEnv(gym.Env):
             "selected_target_distance_score": float(selected_target["selected_target_distance_score"]),
             "selected_target_material_score": float(selected_target["selected_target_material_score"]),
             "selected_target_reachability_score": float(selected_target["selected_target_reachability_score"]),
+            "selected_target_thermal_score": float(selected_target["selected_target_thermal_score"]),
             "selected_target_risk_score": float(selected_target["selected_target_risk_score"]),
             "spray_radius": float(self.cover_radius),
             "mean_material_height": float(self.mean_material_height),
@@ -1378,6 +1439,7 @@ class ShangZengEnv(gym.Env):
             "steam_count": int(len(self.steams)),
             "steam_timeout_enabled": bool(self.steam_timeout_enabled),
             "spawn_history_observation_enabled": bool(self.spawn_history_observation_enabled),
+            "thermal_context_observation_enabled": bool(self.thermal_context_observation_enabled),
             "steam_attention_observation_enabled": bool(self.steam_attention_observation_enabled),
             "material_map_observation_enabled": bool(self.material_map_observation_enabled),
             "potential_shaping_enabled": bool(self.potential_shaping_enabled),

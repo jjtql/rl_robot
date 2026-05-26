@@ -76,6 +76,8 @@ Treat single-steam settings as curriculum or sanity checks, not the main contrib
 
 Good next experiments:
 
+- If v6 stays mid, try `thermal_lstm_spawnhist_thermal_v7` before any bigger beta sweep: thermal-aware target scoring, `horizon2` residual base/BC expert, 8-steam attention, and the same spawn-history prediction loss.
+- Use the v6 memory candidate before more beta-only tuning: `horizon3` residual base/BC expert, 8-steam attention, thermal context observation, keep LSTM state across cover events, and restore spawn prediction loss.
 - Tune residual strength: `residual_beta` in `0.1,0.2,0.3`.
 - Compare residual bases: `horizon2`, `dynamic_weighted`, `risk_aware`.
 - Add map-centric state: compact material map or coverage-hole features.
@@ -84,3 +86,8 @@ Good next experiments:
 - Evaluate generalization with different `max_steams`, thermal spawn parameters, and held-out seeds.
 
 When the user wants a quick "water journal" route, prefer a narrow applied framing with transparent baselines over hiding strong baselines. The paper can still be modest; it should not be brittle.
+
+Current hard/extreme warning:
+
+- Do not frame `thermal_lstm_spawnhist_release_v5` as a hard/extreme improvement; held-out quick eval did not support that claim.
+- Treat `thermal_lstm_spawnhist_memory_v6` as the next diagnostic experiment for whether LSTM memory and spawn prediction can combine with a stronger planner base.

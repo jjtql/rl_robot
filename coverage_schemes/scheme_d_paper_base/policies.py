@@ -136,8 +136,10 @@ class AcoTspPolicy:
 class PPOPolicy:
     name = "ppo"
 
-    def __init__(self, env, model_path, deterministic=True):
+    def __init__(self, env, model_path, deterministic=True, config_override=None):
         config = checkpoint_config(model_path)
+        if config_override:
+            config = {**config, **{key: value for key, value in config_override.items() if value is not None}}
         self.agent = PPOAgent(
             env.observation_space.shape[0],
             env.action_space.shape[0],
@@ -146,6 +148,8 @@ class PPOPolicy:
             use_steam_attention=config.get("use_steam_attention", False),
             use_material_map=config.get("use_material_map", False),
             base_obs_dim=getattr(env, "base_obs_dim", config.get("base_obs_dim", 35)),
+            attention_steam_count=config.get("attention_steam_count", getattr(env, "attention_steam_count", 6)),
+            attention_steam_dim=config.get("attention_steam_dim", getattr(env, "attention_steam_dim", 8)),
             device=config.get("device", "auto"),
         )
         load_checkpoint(self.agent, model_path)
@@ -154,8 +158,15 @@ class PPOPolicy:
         self.hx = None
         self.cx = None
         self.residual_policy = bool(config.get("residual_policy", False))
-        self.residual_beta = float(config.get("residual_beta", 0.25))
+        scheduled_beta = config.get("residual_beta_end")
+        warmup_steps = int(config.get("residual_beta_warmup_steps", 0) or 0)
+        if scheduled_beta is not None and warmup_steps > 0:
+            self.residual_beta = float(scheduled_beta)
+        else:
+            self.residual_beta = float(config.get("residual_beta", 0.25))
         self.residual_guard = bool(config.get("residual_guard", True))
+        self.recurrent_reset_on_cover = bool(config.get("recurrent_reset_on_cover", True))
+        self.recurrent_reset_on_miss = bool(config.get("recurrent_reset_on_miss", True))
         self.residual_base_policy_name = config.get("residual_base_policy", "risk_aware")
         self.residual_base_policy = build_base_policy(self.residual_base_policy_name) if self.residual_policy else None
         if self.residual_policy:
@@ -281,11 +292,29 @@ def select_risk_aware_steam(env):
         reach_offset = np.linalg.norm(cell_xy - env.home_ee_pos[:2]) if env.home_ee_pos is not None else 0.0
         reach_score = 1.0 - np.clip(reach_offset / max(env.max_target_offset, 1e-6), 0.0, 1.0)
 
-        score = 0.40 * age_score + 0.30 * dist_score + 0.20 * material_score + 0.10 * reach_score
+        thermal_score = thermal_score_at_xy(env, cell_xy)
+
+        score = (
+            0.35 * age_score
+            + 0.25 * dist_score
+            + 0.15 * material_score
+            + 0.10 * reach_score
+            + 0.15 * thermal_score
+        )
         if score > best_score:
             best_score = score
             best_steam = steam
     return best_steam
+
+
+def thermal_score_at_xy(env, xy):
+    scorer = getattr(env, "_thermal_score_at_xy", None)
+    if scorer is None:
+        return 0.0
+    try:
+        return float(np.clip(scorer(np.asarray(xy, dtype=np.float32)), 0.0, 1.0))
+    except Exception:
+        return 0.0
 
 
 def select_dynamic_weighted_steam(env):
@@ -293,11 +322,13 @@ def select_dynamic_weighted_steam(env):
         return None
     density = np.clip(len(env.steams) / max(env.max_steams, 1), 0.0, 1.0)
     material_pressure = np.clip(env.material_quality_loss, 0.0, 1.5) / 1.5
+    spawn_pressure = float(np.clip(env.spawn_probability * max(env.spawn_cooldown_steps, 1), 0.0, 1.0))
     weights = {
-        "age": 0.30 + 0.20 * density,
-        "distance": 0.38 - 0.12 * density,
-        "material": 0.18 + 0.18 * material_pressure,
-        "reachability": 0.14 - 0.06 * material_pressure,
+        "age": 0.28 + 0.16 * density,
+        "distance": 0.34 - 0.10 * density,
+        "material": 0.16 + 0.14 * material_pressure,
+        "reachability": 0.10 - 0.04 * material_pressure,
+        "thermal": 0.12 + 0.10 * max(density, spawn_pressure),
     }
     return max(env.steams, key=lambda steam: score_steam(env, steam, env.cover_center, weights))
 
@@ -311,18 +342,27 @@ def score_steam(env, steam, center_xy=None, weights=None):
         distance_score = components["selected_target_distance_score"]
         material_score = components["selected_target_material_score"]
         reachability_score = components["selected_target_reachability_score"]
+        thermal_score = components.get("selected_target_thermal_score", thermal_score_at_xy(env, steam["pos"][:2]))
     else:
         dist = float(np.linalg.norm(steam["pos"][:2] - center_xy))
         distance_score = 1.0 - np.clip(dist / max(env.pot_radius, 1e-6), 0.0, 1.0)
         age_score = np.clip(steam["age"] / max(env.max_steam_age, 1), 0.0, 1.0)
         material_score = 0.0
         reachability_score = 1.0
-    weights = weights or {"age": 0.40, "distance": 0.30, "material": 0.20, "reachability": 0.10}
+        thermal_score = thermal_score_at_xy(env, steam["pos"][:2])
+    weights = weights or {
+        "age": 0.35,
+        "distance": 0.25,
+        "material": 0.15,
+        "reachability": 0.10,
+        "thermal": 0.15,
+    }
     return float(
-        weights["age"] * age_score
-        + weights["distance"] * distance_score
-        + weights["material"] * material_score
-        + weights["reachability"] * reachability_score
+        weights.get("age", 0.0) * age_score
+        + weights.get("distance", 0.0) * distance_score
+        + weights.get("material", 0.0) * material_score
+        + weights.get("reachability", 0.0) * reachability_score
+        + weights.get("thermal", 0.0) * thermal_score
     )
 
 
@@ -443,11 +483,11 @@ def action_toward_steam(env, steam):
     return np.clip(action, env.action_space.low, env.action_space.high).astype(np.float32)
 
 
-def build_policy(kind, env, model_path=None, deterministic=True):
+def build_policy(kind, env, model_path=None, deterministic=True, config_override=None):
     if kind in ("random", "nearest", "oldest", "distance_age", "risk_aware", "dynamic_weighted", "horizon2", "horizon3", "aco_tsp"):
         return build_base_policy(kind)
     if kind == "ppo":
         if not model_path:
             raise ValueError("--model is required for --policy ppo")
-        return PPOPolicy(env, model_path, deterministic=deterministic)
+        return PPOPolicy(env, model_path, deterministic=deterministic, config_override=config_override)
     raise ValueError(f"Unknown policy: {kind}")

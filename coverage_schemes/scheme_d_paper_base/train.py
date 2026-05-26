@@ -27,6 +27,19 @@ TARGET_SELECTOR_CHOICES = ("nearest", "risk_aware")
 STAGE_CHOICES = ("single_easy", "single_precision", "multi_low", "multi_realistic", "multi_hard", "multi_extreme")
 
 
+def residual_beta_at_step(config, total_steps):
+    base_beta = float(config.get("residual_beta", 0.25))
+    warmup_steps = int(config.get("residual_beta_warmup_steps", 0) or 0)
+    if warmup_steps <= 0:
+        return base_beta
+    start = config.get("residual_beta_start")
+    end = config.get("residual_beta_end")
+    start = base_beta if start is None else float(start)
+    end = base_beta if end is None else float(end)
+    progress = min(max(float(total_steps) / max(warmup_steps, 1), 0.0), 1.0)
+    return float(start + progress * (end - start))
+
+
 def new_memory():
     return {
         "s": [],
@@ -200,7 +213,9 @@ def build_arg_parser():
     parser.add_argument("--bc-supervised-decay-steps", type=int, help="Steps over which auxiliary BC loss decays.")
     parser.add_argument("--target-selector", choices=TARGET_SELECTOR_CHOICES, help="Target features/reward-shaping selector.")
     parser.add_argument("--steam-attention", action="store_true", help="Use a steam-set attention encoder before LSTM PPO.")
+    parser.add_argument("--attention-steam-count", type=int, help="Number of active steam points exposed to the attention encoder.")
     parser.add_argument("--spawn-history-observation", action="store_true", help="Append recent steam spawn history features for LSTM prediction.")
+    parser.add_argument("--thermal-context-observation", action="store_true", help="Append thermal hotspot and spawn-pressure context features.")
     parser.add_argument("--material-map", action="store_true", help="Append a compact material/frontier map and use the attention-map PPO encoder.")
     parser.add_argument("--material-tv-reward", action="store_true", help="Reward reductions in material hole/TV/overfill loss.")
     parser.add_argument("--material-tv-reward-gain", type=float, help="Gain for material TV/quality shaping.")
@@ -229,7 +244,12 @@ def build_arg_parser():
     parser.add_argument("--residual-policy", action="store_true", help="Train the actor as a residual around a rule/planner base controller.")
     parser.add_argument("--residual-base-policy", choices=BC_POLICY_CHOICES, help="Base controller for residual PPO.")
     parser.add_argument("--residual-beta", type=float, help="Scale applied to the learned residual action.")
+    parser.add_argument("--residual-beta-start", type=float, help="Initial residual action scale for release schedules.")
+    parser.add_argument("--residual-beta-end", type=float, help="Final residual action scale after the release warmup.")
+    parser.add_argument("--residual-beta-warmup-steps", type=int, help="Steps over which residual beta increases from start to end.")
     parser.add_argument("--no-residual-guard", action="store_true", help="Disable residual direction guard.")
+    parser.add_argument("--keep-lstm-state-on-cover", action="store_true", help="Do not reset recurrent state when a steam is covered.")
+    parser.add_argument("--keep-lstm-state-on-miss", action="store_true", help="Do not reset recurrent state when a steam is missed.")
     parser.add_argument("--device", help="Training device: auto, cpu, cuda, or cuda:N.")
     parser.add_argument("--bc-episodes", type=int, help="Behavior cloning warm-start episodes.")
     parser.add_argument("--bc-epochs", type=int, help="Behavior cloning epochs.")
@@ -281,8 +301,12 @@ def apply_cli_overrides(config, args):
         "thermal_recent_spawn_radius",
         "thermal_recent_spawn_suppression",
         "thermal_recent_spawn_memory",
+        "attention_steam_count",
         "residual_base_policy",
         "residual_beta",
+        "residual_beta_start",
+        "residual_beta_end",
+        "residual_beta_warmup_steps",
         "device",
     ):
         value = getattr(args, key)
@@ -295,6 +319,9 @@ def apply_cli_overrides(config, args):
         config["use_lstm"] = True
     if args.spawn_history_observation:
         config["use_spawn_history_observation"] = True
+        config["use_lstm"] = True
+    if args.thermal_context_observation:
+        config["use_thermal_context_observation"] = True
         config["use_lstm"] = True
     if args.material_map:
         config["use_material_map"] = True
@@ -328,6 +355,10 @@ def apply_cli_overrides(config, args):
         config["residual_policy"] = True
     if args.no_residual_guard:
         config["residual_guard"] = False
+    if args.keep_lstm_state_on_cover:
+        config["recurrent_reset_on_cover"] = False
+    if args.keep_lstm_state_on_miss:
+        config["recurrent_reset_on_miss"] = False
     if args.bc_policy is not None:
         config["bc_policy"] = args.bc_policy
     bc_stage_override = parse_stage_episodes(args.bc_stage_episodes)
@@ -381,6 +412,17 @@ def configure_env_from_config(env, config):
         config.get("thermal_recent_spawn_suppression", env.thermal_recent_spawn_suppression)
     )
     env.thermal_recent_spawn_memory = int(config.get("thermal_recent_spawn_memory", env.thermal_recent_spawn_memory))
+    env.spawn_history_observation_enabled = bool(
+        config.get("use_spawn_history_observation", env.spawn_history_observation_enabled)
+    )
+    env.thermal_context_observation_enabled = bool(config.get("use_thermal_context_observation", False))
+    env.steam_attention_observation_enabled = bool(
+        config.get("use_steam_attention", env.steam_attention_observation_enabled)
+    )
+    env.material_map_observation_enabled = bool(config.get("use_material_map", env.material_map_observation_enabled))
+    env.attention_steam_count = int(config.get("attention_steam_count", env.attention_steam_count))
+    env.attention_steam_dim = int(config.get("attention_steam_dim", env.attention_steam_dim))
+    env.refresh_observation_space()
     return env
 
 
@@ -430,6 +472,8 @@ def save_checkpoint(agent, ep, config, run_path):
             "use_steam_attention": agent.use_steam_attention,
             "use_material_map": agent.use_material_map,
             "base_obs_dim": agent.base_obs_dim,
+            "attention_steam_count": agent.attention_steam_count,
+            "attention_steam_dim": agent.attention_steam_dim,
             "device": str(agent.device),
             "train_steps": agent.train_steps,
         },
@@ -475,7 +519,10 @@ def train(config, run_path):
         target_selector=config.get("target_selector", "risk_aware"),
         steam_attention_observation=config.get("use_steam_attention", False),
         spawn_history_observation=config.get("use_spawn_history_observation", False),
+        thermal_context_observation=config.get("use_thermal_context_observation", False),
         material_map_observation=config.get("use_material_map", False),
+        attention_steam_count=config.get("attention_steam_count", 6),
+        attention_steam_dim=config.get("attention_steam_dim", 8),
     )
     configure_env_from_config(env, config)
     obs_dim = env.observation_space.shape[0]
@@ -488,6 +535,8 @@ def train(config, run_path):
         use_steam_attention=config.get("use_steam_attention", False),
         use_material_map=config.get("use_material_map", False),
         base_obs_dim=config.get("base_obs_dim", 35),
+        attention_steam_count=config.get("attention_steam_count", 6),
+        attention_steam_dim=config.get("attention_steam_dim", 8),
         lr=config.get("ppo_lr", 1e-4),
         ppo_epochs=config.get("ppo_epochs", 4),
         clip_param=config.get("ppo_clip", 0.12),
@@ -572,13 +621,18 @@ def train(config, run_path):
                 f"Target selector: {env.target_selector}\n"
                 f"LSTM: {agent.use_lstm}\n"
                 f"Steam attention: {agent.use_steam_attention}\n"
+                f"Attention steam count: {getattr(agent, 'attention_steam_count', 0)}\n"
                 f"Spawn history obs: {config.get('use_spawn_history_observation', False)}\n"
+                f"Thermal context obs: {config.get('use_thermal_context_observation', False)}\n"
                 f"Material map: {agent.use_material_map}\n"
                 f"Device: {agent.device}\n"
                 f"Prediction coef/horizon: {agent.pred_coef}/{config.get('prediction_horizon_steps', 0)}\n"
                 f"Material TV reward: {env.material_tv_reward_enabled}\n"
                 f"Residual policy: {config.get('residual_policy', False)}\n"
                 f"Residual base: {config.get('residual_base_policy', 'risk_aware')}\n"
+                f"Residual beta: {config.get('residual_beta', 0.25)} "
+                f"(schedule {config.get('residual_beta_start')} -> {config.get('residual_beta_end')} "
+                f"over {config.get('residual_beta_warmup_steps', 0)} steps)\n"
                 f"Action delay/noise: {env.action_delay_steps}/{env.action_noise_std}\n"
                 f"Domain randomization: {env.domain_randomization_enabled}\n"
                 f"Thermal spawn: {env.thermal_spawn_enabled} "
@@ -601,6 +655,12 @@ def train(config, run_path):
                 ep_covered = 0
                 ep_action_delta = []
                 ep_action_l2 = []
+                ep_hidden_resets = 0
+                ep_cover_resets = 0
+                ep_cover_keeps = 0
+                ep_miss_resets = 0
+                ep_spawn_events = 0
+                pred_supervised_indices = set()
                 hx, cx = None, None
                 previous_missed = info.get("missed_count", 0)
                 previous_action = np.zeros(env.action_space.shape[0], dtype=np.float32)
@@ -609,14 +669,17 @@ def train(config, run_path):
 
                 for _ in range(config["episode_steps"]):
                     hidden_reset = float(hx is None or cx is None)
+                    if hidden_reset > 0.5:
+                        ep_hidden_resets += 1
                     bc_action = bc_controller.act(env, s)
                     raw_a, lp, v, pred_xy, hx_n, cx_n = agent.select_action(s, hx, cx)
+                    current_residual_beta = residual_beta_at_step(config, total_steps)
                     if config.get("residual_policy", False):
                         base_action = residual_base_controller.act(env, s)
                         a = combine_residual_action(
                             base_action,
                             raw_a,
-                            beta=config.get("residual_beta", 0.25),
+                            beta=current_residual_beta,
                             guard=config.get("residual_guard", True),
                         )
                         bc_action_for_loss = np.zeros_like(raw_a, dtype=np.float32)
@@ -640,12 +703,15 @@ def train(config, run_path):
                     memory["bc_mask"].append(1.0 if env.steams else 0.0)
                     episode_memory_indices.append(len(memory["pred_target"]) - 1)
 
+                    if info.get("pred_mask", 0.0) > 0.0:
+                        ep_spawn_events += int(info.get("spawned_this_step", 1))
                     if config.get("pred_coef", 0.0) > 0.0 and info.get("pred_mask", 0.0) > 0.0:
                         horizon = max(int(config.get("prediction_horizon_steps", 0)), 1)
                         pred_target = np.asarray(info["pred_target"], dtype=np.float32).copy()
                         for mem_idx in episode_memory_indices[-horizon:]:
                             memory["pred_target"][mem_idx] = pred_target
                             memory["pred_mask"][mem_idx] = 1.0
+                            pred_supervised_indices.add(mem_idx)
 
                     ep_action_delta.append(float(np.linalg.norm(a - previous_env_action)))
                     ep_action_l2.append(float(np.dot(a, a)))
@@ -659,9 +725,15 @@ def train(config, run_path):
 
                     if info.get("covered", False):
                         ep_covered += 1
-                        hx, cx = None, None
+                        if config.get("recurrent_reset_on_cover", True):
+                            hx, cx = None, None
+                            ep_cover_resets += 1
+                        else:
+                            ep_cover_keeps += 1
                     elif info.get("missed_count", 0) > previous_missed:
-                        hx, cx = None, None
+                        if config.get("recurrent_reset_on_miss", True):
+                            hx, cx = None, None
+                            ep_miss_resets += 1
                     previous_missed = info.get("missed_count", 0)
 
                     if total_steps % update_timestep == 0:
@@ -670,7 +742,14 @@ def train(config, run_path):
                         last_update_stats = agent.update(memory)
                         memory = new_memory()
                         episode_memory_indices = []
-                        logger.log_event("ppo_update", {"total_steps": total_steps, **last_update_stats})
+                        logger.log_event(
+                            "ppo_update",
+                            {
+                                "total_steps": total_steps,
+                                "residual_beta": residual_beta_at_step(config, total_steps),
+                                **last_update_stats,
+                            },
+                        )
 
                     if terminated or truncated:
                         break
@@ -712,16 +791,27 @@ def train(config, run_path):
                     "selected_target_distance_score": float(info.get("selected_target_distance_score", 0.0)),
                     "selected_target_material_score": float(info.get("selected_target_material_score", 0.0)),
                     "selected_target_reachability_score": float(info.get("selected_target_reachability_score", 0.0)),
+                    "selected_target_thermal_score": float(info.get("selected_target_thermal_score", 0.0)),
                     "selected_target_risk_score": float(info.get("selected_target_risk_score", 0.0)),
                     "use_lstm": bool(agent.use_lstm),
                     "use_steam_attention": bool(agent.use_steam_attention),
+                    "attention_steam_count": int(getattr(agent, "attention_steam_count", 0)),
                     "use_spawn_history_observation": bool(config.get("use_spawn_history_observation", False)),
+                    "use_thermal_context_observation": bool(config.get("use_thermal_context_observation", False)),
                     "use_material_map": bool(agent.use_material_map),
                     "device": str(agent.device),
                     "residual_policy": bool(config.get("residual_policy", False)),
                     "residual_base_policy": str(config.get("residual_base_policy", "")),
-                    "residual_beta": float(config.get("residual_beta", 0.0)),
+                    "residual_beta": float(residual_beta_at_step(config, total_steps)),
                     "residual_guard": bool(config.get("residual_guard", True)),
+                    "recurrent_reset_on_cover": bool(config.get("recurrent_reset_on_cover", True)),
+                    "recurrent_reset_on_miss": bool(config.get("recurrent_reset_on_miss", True)),
+                    "recurrent_hidden_resets": int(ep_hidden_resets),
+                    "recurrent_cover_resets": int(ep_cover_resets),
+                    "recurrent_cover_keeps": int(ep_cover_keeps),
+                    "recurrent_miss_resets": int(ep_miss_resets),
+                    "prediction_supervised_steps": int(len(pred_supervised_indices)),
+                    "prediction_spawn_events": int(ep_spawn_events),
                     "material_map_observation_enabled": bool(info.get("material_map_observation_enabled", False)),
                     "potential_shaping_enabled": bool(info.get("potential_shaping_enabled", True)),
                     "best_progress_enabled": bool(info.get("best_progress_enabled", True)),

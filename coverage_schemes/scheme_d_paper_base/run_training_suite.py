@@ -1,5 +1,6 @@
 import argparse
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 
@@ -252,6 +253,196 @@ METHODS = {
         "--bc-stage-episodes",
         "multi_low:45,multi_realistic:60,multi_hard:75",
     ],
+    "thermal_lstm_spawnhist_release_v5": [
+        "--target-selector",
+        "risk_aware",
+        "--bc-policy",
+        "horizon2",
+        "--steam-attention",
+        "--spawn-history-observation",
+        "--residual-policy",
+        "--residual-base-policy",
+        "horizon2",
+        "--residual-beta",
+        "0.35",
+        "--residual-beta-start",
+        "0.08",
+        "--residual-beta-end",
+        "0.35",
+        "--residual-beta-warmup-steps",
+        "450000",
+        "--stage-episodes",
+        "multi_low:150,multi_realistic:250,multi_hard:700,multi_extreme:150",
+        "--update-episodes",
+        "4",
+        "--no-action-smoothing-penalty",
+        "--thermal-hotspot-strength",
+        "2.2",
+        "--thermal-background-weight",
+        "0.25",
+        "--ppo-lr",
+        "1e-5",
+        "--ppo-epochs",
+        "1",
+        "--ppo-clip",
+        "0.05",
+        "--ppo-value-clip",
+        "0.05",
+        "--ppo-entropy-start",
+        "0.0007",
+        "--ppo-entropy-end",
+        "0.00015",
+        "--ppo-entropy-decay-steps",
+        "900000",
+        "--bc-supervised-coef",
+        "0.14",
+        "--bc-supervised-min-coef",
+        "0.0",
+        "--bc-supervised-decay-steps",
+        "360000",
+        "--bc-episodes",
+        "180",
+        "--bc-epochs",
+        "12",
+        "--bc-stage-episodes",
+        "multi_low:30,multi_realistic:50,multi_hard:80,multi_extreme:20",
+    ],
+    "thermal_lstm_spawnhist_memory_v6": [
+        "--target-selector",
+        "risk_aware",
+        "--bc-policy",
+        "horizon3",
+        "--steam-attention",
+        "--attention-steam-count",
+        "8",
+        "--spawn-history-observation",
+        "--thermal-context-observation",
+        "--keep-lstm-state-on-cover",
+        "--residual-policy",
+        "--residual-base-policy",
+        "horizon3",
+        "--residual-beta",
+        "0.30",
+        "--residual-beta-start",
+        "0.06",
+        "--residual-beta-end",
+        "0.30",
+        "--residual-beta-warmup-steps",
+        "650000",
+        "--stage-episodes",
+        "multi_low:120,multi_realistic:230,multi_hard:750,multi_extreme:150",
+        "--update-episodes",
+        "4",
+        "--no-action-smoothing-penalty",
+        "--thermal-hotspot-strength",
+        "3.0",
+        "--thermal-background-weight",
+        "0.10",
+        "--thermal-drift-std",
+        "0.003",
+        "--thermal-lifetime-steps",
+        "900",
+        "--thermal-recent-spawn-memory",
+        "24",
+        "--pred-coef",
+        "0.04",
+        "--prediction-horizon-steps",
+        "120",
+        "--ppo-lr",
+        "1e-5",
+        "--ppo-epochs",
+        "1",
+        "--ppo-clip",
+        "0.05",
+        "--ppo-value-clip",
+        "0.05",
+        "--ppo-entropy-start",
+        "0.0008",
+        "--ppo-entropy-end",
+        "0.00018",
+        "--ppo-entropy-decay-steps",
+        "1000000",
+        "--bc-supervised-coef",
+        "0.12",
+        "--bc-supervised-min-coef",
+        "0.0",
+        "--bc-supervised-decay-steps",
+        "500000",
+        "--bc-episodes",
+        "180",
+        "--bc-epochs",
+        "12",
+        "--bc-stage-episodes",
+        "multi_low:25,multi_realistic:45,multi_hard:85,multi_extreme:25",
+    ],
+    "thermal_lstm_spawnhist_thermal_v7": [
+        "--target-selector",
+        "risk_aware",
+        "--bc-policy",
+        "horizon2",
+        "--steam-attention",
+        "--attention-steam-count",
+        "8",
+        "--spawn-history-observation",
+        "--thermal-context-observation",
+        "--keep-lstm-state-on-cover",
+        "--residual-policy",
+        "--residual-base-policy",
+        "horizon2",
+        "--residual-beta",
+        "0.25",
+        "--residual-beta-start",
+        "0.06",
+        "--residual-beta-end",
+        "0.25",
+        "--residual-beta-warmup-steps",
+        "650000",
+        "--stage-episodes",
+        "multi_low:100,multi_realistic:200,multi_hard:800,multi_extreme:150",
+        "--update-episodes",
+        "4",
+        "--no-action-smoothing-penalty",
+        "--thermal-hotspot-strength",
+        "3.0",
+        "--thermal-background-weight",
+        "0.10",
+        "--thermal-drift-std",
+        "0.003",
+        "--thermal-lifetime-steps",
+        "900",
+        "--thermal-recent-spawn-memory",
+        "24",
+        "--pred-coef",
+        "0.04",
+        "--prediction-horizon-steps",
+        "120",
+        "--ppo-lr",
+        "1e-5",
+        "--ppo-epochs",
+        "1",
+        "--ppo-clip",
+        "0.05",
+        "--ppo-value-clip",
+        "0.05",
+        "--ppo-entropy-start",
+        "0.0008",
+        "--ppo-entropy-end",
+        "0.00018",
+        "--ppo-entropy-decay-steps",
+        "1000000",
+        "--bc-supervised-coef",
+        "0.10",
+        "--bc-supervised-min-coef",
+        "0.0",
+        "--bc-supervised-decay-steps",
+        "500000",
+        "--bc-episodes",
+        "160",
+        "--bc-epochs",
+        "10",
+        "--bc-stage-episodes",
+        "multi_low:20,multi_realistic:40,multi_hard:75,multi_extreme:25",
+    ],
     "risk_aware": ["--target-selector", "risk_aware", "--bc-policy", "risk_aware"],
     "nearest": ["--target-selector", "nearest", "--bc-policy", "nearest"],
     "no_bc": ["--target-selector", "risk_aware", "--no-bc"],
@@ -266,7 +457,7 @@ METHODS = {
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(description="Generate or execute multi-seed PPO training commands.")
-    parser.add_argument("--python", default="mujoco_rl_env/bin/python")
+    parser.add_argument("--python", default=".venv/bin/python")
     parser.add_argument("--run-dir", default="runs/scheme_d_paper_suite")
     parser.add_argument("--seeds", default="0,1,2,3,4")
     parser.add_argument("--methods", default="risk_aware,nearest,no_bc,no_lstm,no_potential")
@@ -285,6 +476,8 @@ def build_arg_parser():
     parser.add_argument("--ppo-entropy-end", type=float)
     parser.add_argument("--ppo-entropy-decay-steps", type=int)
     parser.add_argument("--ppo-max-grad-norm", type=float)
+    parser.add_argument("--pred-coef", type=float)
+    parser.add_argument("--prediction-horizon-steps", type=int)
     parser.add_argument("--bc-supervised-coef", type=float)
     parser.add_argument("--bc-supervised-min-coef", type=float)
     parser.add_argument("--bc-supervised-decay-steps", type=int)
@@ -293,9 +486,13 @@ def build_arg_parser():
     parser.add_argument("--domain-randomization", action="store_true")
     parser.add_argument("--domain-randomization-scale", type=float)
     parser.add_argument("--residual-beta", type=float)
+    parser.add_argument("--residual-beta-start", type=float)
+    parser.add_argument("--residual-beta-end", type=float)
+    parser.add_argument("--residual-beta-warmup-steps", type=int)
     parser.add_argument("--device", help="Training device override: auto, cpu, cuda, or cuda:N.")
     parser.add_argument("--output", default="runs/scheme_d_paper_suite/commands.txt")
     parser.add_argument("--execute", action="store_true", help="Run commands sequentially. Intended for long monitored jobs.")
+    parser.add_argument("--jobs", type=int, default=1, help="Number of training commands to run concurrently with --execute.")
     return parser
 
 
@@ -337,6 +534,8 @@ def command_for(args, method, seed):
         ("ppo_entropy_end", "--ppo-entropy-end"),
         ("ppo_entropy_decay_steps", "--ppo-entropy-decay-steps"),
         ("ppo_max_grad_norm", "--ppo-max-grad-norm"),
+        ("pred_coef", "--pred-coef"),
+        ("prediction_horizon_steps", "--prediction-horizon-steps"),
         ("bc_supervised_coef", "--bc-supervised-coef"),
         ("bc_supervised_min_coef", "--bc-supervised-min-coef"),
         ("bc_supervised_decay_steps", "--bc-supervised-decay-steps"),
@@ -344,6 +543,9 @@ def command_for(args, method, seed):
         ("action_noise_std", "--action-noise-std"),
         ("domain_randomization_scale", "--domain-randomization-scale"),
         ("residual_beta", "--residual-beta"),
+        ("residual_beta_start", "--residual-beta-start"),
+        ("residual_beta_end", "--residual-beta-end"),
+        ("residual_beta_warmup_steps", "--residual-beta-warmup-steps"),
         ("device", "--device"),
     ):
         value = getattr(args, attr)
@@ -356,6 +558,12 @@ def command_for(args, method, seed):
 
 def shell_join(command):
     return " ".join(command)
+
+
+def run_command(index, total, command):
+    print(f"[{index}/{total}] START {shell_join(command)}", flush=True)
+    subprocess.run(command, check=True)
+    print(f"[{index}/{total}] DONE {shell_join(command)}", flush=True)
 
 
 def main():
@@ -372,9 +580,18 @@ def main():
     print(f"Wrote {len(commands)} commands to {output}")
 
     if args.execute:
-        for idx, command in enumerate(commands, start=1):
-            print(f"[{idx}/{len(commands)}] {shell_join(command)}", flush=True)
-            subprocess.run(command, check=True)
+        jobs = max(int(args.jobs), 1)
+        if jobs == 1:
+            for idx, command in enumerate(commands, start=1):
+                run_command(idx, len(commands), command)
+        else:
+            with ThreadPoolExecutor(max_workers=jobs) as executor:
+                futures = [
+                    executor.submit(run_command, idx, len(commands), command)
+                    for idx, command in enumerate(commands, start=1)
+                ]
+                for future in as_completed(futures):
+                    future.result()
 
 
 if __name__ == "__main__":

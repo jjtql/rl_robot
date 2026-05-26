@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+.venv/bin/python -m coverage_schemes.scheme_d_paper_base.train \
+  --run-dir runs/scheme_d_paper_suite \
+  --run-name thermal_lstm_spawnhist_memory_v6_seed0 \
+  --seed 0 \
+  --headless \
+  --target-selector risk_aware \
+  --bc-policy horizon3 \
+  --steam-attention \
+  --attention-steam-count 8 \
+  --spawn-history-observation \
+  --thermal-context-observation \
+  --keep-lstm-state-on-cover \
+  --residual-policy \
+  --residual-base-policy horizon3 \
+  --residual-beta 0.30 \
+  --residual-beta-start 0.06 \
+  --residual-beta-end 0.30 \
+  --residual-beta-warmup-steps 650000 \
+  --stage-episodes multi_low:120,multi_realistic:230,multi_hard:750,multi_extreme:150 \
+  --update-episodes 4 \
+  --no-action-smoothing-penalty \
+  --thermal-hotspot-strength 3.0 \
+  --thermal-background-weight 0.10 \
+  --thermal-drift-std 0.003 \
+  --thermal-lifetime-steps 900 \
+  --thermal-recent-spawn-memory 24 \
+  --pred-coef 0.04 \
+  --prediction-horizon-steps 120 \
+  --ppo-lr 1e-5 \
+  --ppo-epochs 1 \
+  --ppo-clip 0.05 \
+  --ppo-value-clip 0.05 \
+  --ppo-entropy-start 0.0008 \
+  --ppo-entropy-end 0.00018 \
+  --ppo-entropy-decay-steps 1000000 \
+  --bc-supervised-coef 0.12 \
+  --bc-supervised-min-coef 0.0 \
+  --bc-supervised-decay-steps 500000 \
+  --bc-episodes 180 \
+  --bc-epochs 12 \
+  --bc-stage-episodes multi_low:25,multi_realistic:45,multi_hard:85,multi_extreme:25

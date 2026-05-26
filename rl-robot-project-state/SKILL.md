@@ -19,7 +19,7 @@ Important project boundaries:
 
 ## Current Main Run
 
-The latest completed run is:
+Historical reference run:
 
 ```text
 runs/scheme_d_paper_suite/thermal_lstm_spawnhist_v3_horizon2_seed0
@@ -43,6 +43,29 @@ Use this framing:
 - The novelty claim must be task-specific and narrow; receding-horizon planning itself is not new.
 
 For the detailed result snapshot, read `references/current_run_thermal_spawnhist_v3.md`.
+
+## Latest Result Snapshot
+
+The later `thermal_lstm_spawnhist_release_v5` runs completed for seed0/seed1. They were stable and the release schedule worked, but held-out quick evaluation did not show a breakthrough over `horizon2` or old v3:
+
+- `multi_realistic`: roughly unchanged versus v3/horizon2.
+- `multi_hard` and `multi_extreme`: training windows looked slightly better in places, but held-out quick eval was weaker than hoped.
+- Important interpretation: simply increasing residual freedom is not enough; the LSTM needs a clearer memory/prediction job and the planner base needs to be stronger than `horizon2`.
+
+The current next implementation candidate is `thermal_lstm_spawnhist_memory_v6`:
+
+- residual base and BC expert: `horizon3`
+- attention steam count: `8`
+- keep recurrent state on cover: enabled
+- thermal context observation: enabled
+- spawn-history prediction loss: `pred_coef=0.04`
+- residual beta schedule: `0.06 -> 0.30` over `650000` steps
+
+Early partial v6 evidence was only modest: hard-stage training last-50 reached about `0.60`, but quick held-out checks did not beat `horizon2`. The next candidate is `thermal_lstm_spawnhist_thermal_v7`, which keeps LSTM-PPO but makes the surrounding planner thermal-aware:
+
+- thermal score is folded into target/routing risk scores
+- residual base and BC expert use `horizon2`
+- residual beta uses `0.06 -> 0.25`
 
 ## Working Procedure
 

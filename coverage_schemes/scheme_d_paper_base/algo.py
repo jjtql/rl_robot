@@ -268,6 +268,8 @@ class PPOAgent:
         use_steam_attention=False,
         use_material_map=False,
         base_obs_dim=35,
+        attention_steam_count=6,
+        attention_steam_dim=8,
         lr=1e-4,
         ppo_epochs=4,
         clip_param=0.12,
@@ -292,6 +294,8 @@ class PPOAgent:
         self.use_material_map = bool(use_material_map)
         self.use_lstm = bool(use_lstm) or self.use_steam_attention or self.use_material_map
         self.base_obs_dim = int(base_obs_dim)
+        self.attention_steam_count = int(attention_steam_count)
+        self.attention_steam_dim = int(attention_steam_dim)
         if self.use_material_map:
             self.use_steam_attention = True
         if self.use_steam_attention:
@@ -301,6 +305,8 @@ class PPOAgent:
                 a_dim,
                 hidden_dim=hidden_dim,
                 base_obs_dim=self.base_obs_dim,
+                steam_count=self.attention_steam_count,
+                steam_dim=self.attention_steam_dim,
                 material_map_channels=material_map_channels,
             )
         else:

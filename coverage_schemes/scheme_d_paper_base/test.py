@@ -9,6 +9,7 @@ import torch
 
 from .algo import PPOAgent
 from .env import ShangZengEnv
+from .policies import build_base_policy, combine_residual_action
 
 
 def load_checkpoint(agent, model_path):
@@ -45,7 +46,10 @@ def test_model(
         target_selector=target_selector,
         steam_attention_observation=checkpoint_cfg.get("use_steam_attention", False),
         spawn_history_observation=checkpoint_cfg.get("use_spawn_history_observation", False),
+        thermal_context_observation=checkpoint_cfg.get("use_thermal_context_observation", False),
         material_map_observation=checkpoint_cfg.get("use_material_map", False),
+        attention_steam_count=checkpoint_cfg.get("attention_steam_count", 6),
+        attention_steam_dim=checkpoint_cfg.get("attention_steam_dim", 8),
     )
     env.configure_curriculum(stage)
     if max_steams is not None:
@@ -66,6 +70,8 @@ def test_model(
         use_steam_attention=checkpoint_cfg.get("use_steam_attention", False),
         use_material_map=checkpoint_cfg.get("use_material_map", False),
         base_obs_dim=getattr(env, "base_obs_dim", checkpoint_cfg.get("base_obs_dim", 35)),
+        attention_steam_count=checkpoint_cfg.get("attention_steam_count", getattr(env, "attention_steam_count", 6)),
+        attention_steam_dim=checkpoint_cfg.get("attention_steam_dim", getattr(env, "attention_steam_dim", 8)),
     )
 
     print(f"Model: {model_path}")
@@ -76,9 +82,21 @@ def test_model(
     print(f"Demo mode: {'on' if demo_mode else 'off'} | max_steps:{max_steps}")
     load_checkpoint(agent, model_path)
     agent.model.eval()
+    residual_policy = bool(checkpoint_cfg.get("residual_policy", False))
+    residual_base_policy = None
+    if residual_policy:
+        residual_base_policy = build_base_policy(checkpoint_cfg.get("residual_base_policy", "risk_aware"))
+        scheduled_beta = checkpoint_cfg.get("residual_beta_end")
+        if scheduled_beta is not None and int(checkpoint_cfg.get("residual_beta_warmup_steps", 0) or 0) > 0:
+            residual_beta = float(scheduled_beta)
+        else:
+            residual_beta = float(checkpoint_cfg.get("residual_beta", 0.25))
+        residual_guard = bool(checkpoint_cfg.get("residual_guard", True))
 
     with mujoco.viewer.launch_passive(env.model, env.data) as viewer:
         s, info = env.reset()
+        if residual_base_policy is not None:
+            residual_base_policy.reset()
         hx, cx = None, None
         previous_missed = info.get("missed_count", 0)
         recent_events = deque(maxlen=max(summary_interval, 1) * 5)
@@ -86,9 +104,22 @@ def test_model(
         for step in range(max_steps):
             with torch.no_grad():
                 action, _, _, _, hx, cx = agent.select_action(s, hx, cx, deterministic=deterministic)
+            if residual_base_policy is not None:
+                base_action = residual_base_policy.act(env, s)
+                action = combine_residual_action(
+                    base_action,
+                    action,
+                    beta=residual_beta,
+                    guard=residual_guard,
+                )
 
             s, r, terminated, truncated, info = env.step(action)
-            if info.get("covered", False) or info.get("missed_count", 0) > previous_missed:
+            reset_for_cover = info.get("covered", False) and checkpoint_cfg.get("recurrent_reset_on_cover", True)
+            reset_for_miss = (
+                info.get("missed_count", 0) > previous_missed
+                and checkpoint_cfg.get("recurrent_reset_on_miss", True)
+            )
+            if reset_for_cover or reset_for_miss:
                 hx, cx = None, None
             previous_missed = info.get("missed_count", 0)
             recent_events.append(1 if info.get("covered", False) else 0)
@@ -118,6 +149,8 @@ def test_model(
                 )
                 hx, cx = None, None
                 s, info = env.reset()
+                if residual_base_policy is not None:
+                    residual_base_policy.reset()
 
 
 if __name__ == "__main__":
