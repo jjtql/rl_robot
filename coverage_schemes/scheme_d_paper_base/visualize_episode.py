@@ -14,7 +14,7 @@ from .policies import build_policy, checkpoint_config
 def build_arg_parser():
     parser = argparse.ArgumentParser(description="Record one qualitative trajectory and material heatmap.")
     parser.add_argument("--config", help="Optional JSON config.")
-    parser.add_argument("--policy", default="risk_aware", choices=["ppo", "random", "nearest", "oldest", "distance_age", "risk_aware", "dynamic_weighted", "horizon2", "horizon3", "aco_tsp"])
+    parser.add_argument("--policy", default="risk_aware", choices=["ppo", "random", "nearest", "oldest", "distance_age", "risk_aware", "dynamic_weighted", "horizon2", "horizon3", "aco_tsp", "planner_ensemble"])
     parser.add_argument("--model", help="Checkpoint for PPO policy.")
     parser.add_argument("--stage", default="multi_realistic", choices=["single_easy", "single_precision", "multi_low", "multi_realistic", "multi_hard", "multi_extreme"])
     parser.add_argument("--steps", type=int, default=800)
@@ -53,6 +53,8 @@ def record_row(step, reward, env, info):
         "selected_target_material_score": float(info.get("selected_target_material_score", 0.0)),
         "selected_target_reachability_score": float(info.get("selected_target_reachability_score", 0.0)),
         "selected_target_thermal_score": float(info.get("selected_target_thermal_score", 0.0)),
+        "route_confidence": float(info.get("route_confidence", 0.0)),
+        "route_stagnation_score": float(info.get("route_stagnation_score", 0.0)),
         "coverage_rate": float(info.get("coverage_rate", 0.0)),
         "success_count": int(info.get("success_count", 0)),
         "spawned_count": int(info.get("spawned_count", 0)),
@@ -145,6 +147,7 @@ def main():
         steam_attention_observation=config.get("use_steam_attention", False),
         spawn_history_observation=config.get("use_spawn_history_observation", False),
         thermal_context_observation=config.get("use_thermal_context_observation", False),
+        route_summary_observation=config.get("use_route_summary_observation", False),
         material_map_observation=config.get("use_material_map", False),
         attention_steam_count=config.get("attention_steam_count", 6),
         attention_steam_dim=config.get("attention_steam_dim", 8),

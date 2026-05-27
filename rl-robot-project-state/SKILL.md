@@ -61,11 +61,22 @@ The current next implementation candidate is `thermal_lstm_spawnhist_memory_v6`:
 - spawn-history prediction loss: `pred_coef=0.04`
 - residual beta schedule: `0.06 -> 0.30` over `650000` steps
 
-Early partial v6 evidence was only modest: hard-stage training last-50 reached about `0.60`, but quick held-out checks did not beat `horizon2`. The next candidate is `thermal_lstm_spawnhist_thermal_v7`, which keeps LSTM-PPO but makes the surrounding planner thermal-aware:
+Early partial v6 evidence was only modest: hard-stage training last-50 reached about `0.60`, but quick held-out checks did not beat `horizon2`. The later candidate `thermal_lstm_spawnhist_thermal_v7` keeps LSTM-PPO but makes the surrounding planner thermal-aware:
 
 - thermal score is folded into target/routing risk scores
 - residual base and BC expert use `horizon2`
 - residual beta uses `0.06 -> 0.25`
+
+The current implemented candidate is `thermal_lstm_spawnhist_ensemble_v8`, intended to test whether components around LSTM-PPO can combine better than plain `horizon2`:
+
+- residual base and BC expert: `planner_ensemble`
+- base planner ensemble scores `horizon2`, `horizon3`, `dynamic_weighted`, `risk_aware`, and nearest-recovery candidates
+- residual action shield: enabled, with stagnation recovery around `160` steps
+- route-summary observation: enabled, adding active density, age pressure, distance pressure, target thermal score, route confidence, spawn readiness, and stagnation score
+- spawn-history prediction loss remains enabled: `pred_coef=0.04`
+- residual beta schedule is slower/smaller: `0.05 -> 0.22` over `700000` steps
+
+Smoke checks only showed that v8 runs and the rule-policy `planner_ensemble` is not immediately worse than `horizon2` on a tiny hard/extreme sanity matrix. Do not treat those smoke numbers as a result claim.
 
 ## Working Procedure
 
@@ -104,6 +115,12 @@ Run a quick held-out matrix:
   --steps 800 \
   --model runs/scheme_d_paper_suite/thermal_lstm_spawnhist_v3_horizon2_seed0/checkpoints/scheme_d_paper_base_latest_full.pt \
   --output-dir runs/matrix/thermal_lstm_spawnhist_v3_horizon2_seed0_quick_eval
+```
+
+Train the current v8 two-seed candidate:
+
+```bash
+scripts/train_memory_v8_ensemble_seeds01.sh
 ```
 
 If local CUDA is unavailable and checkpoint loading ignores `--device cpu`, create a temporary CPU copy outside the repo or under `/tmp`; leave the original checkpoint untouched.

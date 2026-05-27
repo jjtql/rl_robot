@@ -22,7 +22,7 @@ def build_arg_parser():
     parser.add_argument("--device", help="PPO device override: auto, cpu, cuda, or cuda:N.")
     parser.add_argument("--target-selector", choices=["nearest", "risk_aware"], help="Target features/reward-shaping selector.")
     parser.add_argument("--max-steams", help="Comma-separated active steam capacities for generalization tests, e.g. 3,4,6.")
-    parser.add_argument("--policies", default="random,nearest,oldest,distance_age,risk_aware,dynamic_weighted,horizon2,horizon3,aco_tsp,ppo")
+    parser.add_argument("--policies", default="random,nearest,oldest,distance_age,risk_aware,dynamic_weighted,horizon2,horizon3,aco_tsp,planner_ensemble,ppo")
     parser.add_argument("--stages", default="multi_low,multi_realistic")
     parser.add_argument("--seeds", default="0,1,2")
     parser.add_argument("--episodes", type=int, default=10)
@@ -47,6 +47,8 @@ def summarize(rows):
         "target_distance",
         "selected_target_risk_score",
         "selected_target_thermal_score",
+        "route_confidence",
+        "route_stagnation_score",
         "height_uniformity",
         "overfill_penalty",
         "material_hole_loss",
@@ -107,6 +109,7 @@ def main():
                         steam_attention_observation=config.get("use_steam_attention", False),
                         spawn_history_observation=config.get("use_spawn_history_observation", False),
                         thermal_context_observation=config.get("use_thermal_context_observation", False),
+                        route_summary_observation=config.get("use_route_summary_observation", False),
                         material_map_observation=config.get("use_material_map", False),
                         attention_steam_count=config.get("attention_steam_count", 6),
                         attention_steam_dim=config.get("attention_steam_dim", 8),

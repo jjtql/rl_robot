@@ -67,6 +67,7 @@ def configure_env_from_config(env, config):
         config.get("use_spawn_history_observation", env.spawn_history_observation_enabled)
     )
     env.thermal_context_observation_enabled = bool(config.get("use_thermal_context_observation", False))
+    env.route_summary_observation_enabled = bool(config.get("use_route_summary_observation", False))
     env.steam_attention_observation_enabled = bool(
         config.get("use_steam_attention", env.steam_attention_observation_enabled)
     )
@@ -81,7 +82,7 @@ def build_arg_parser():
     parser = argparse.ArgumentParser(description="Headless evaluation for paper experiments.")
     parser.add_argument("--config", help="Optional JSON config.")
     parser.add_argument("--model", help="Checkpoint for PPO policy.")
-    parser.add_argument("--policy", default="ppo", choices=["ppo", "random", "nearest", "oldest", "distance_age", "risk_aware", "dynamic_weighted", "horizon2", "horizon3", "aco_tsp"])
+    parser.add_argument("--policy", default="ppo", choices=["ppo", "random", "nearest", "oldest", "distance_age", "risk_aware", "dynamic_weighted", "horizon2", "horizon3", "aco_tsp", "planner_ensemble"])
     parser.add_argument("--method", help="Method name written to CSV.")
     parser.add_argument("--stage", default="multi_realistic", choices=["single_easy", "single_precision", "multi_low", "multi_realistic", "multi_hard", "multi_extreme"])
     parser.add_argument("--episodes", type=int, default=20)
@@ -154,6 +155,7 @@ def evaluate_episode(env, policy, seed, max_steps, demo_mode=False):
         "target_selector": str(info.get("target_selector", "")),
         "spawn_history_observation_enabled": bool(info.get("spawn_history_observation_enabled", False)),
         "thermal_context_observation_enabled": bool(info.get("thermal_context_observation_enabled", False)),
+        "route_summary_observation_enabled": bool(info.get("route_summary_observation_enabled", False)),
         "steam_attention_observation_enabled": bool(info.get("steam_attention_observation_enabled", False)),
         "material_map_observation_enabled": bool(info.get("material_map_observation_enabled", False)),
         "selected_target_id": int(info.get("selected_target_id", -1)),
@@ -167,6 +169,15 @@ def evaluate_episode(env, policy, seed, max_steps, demo_mode=False):
         "selected_target_reachability_score": float(info.get("selected_target_reachability_score", 0.0)),
         "selected_target_thermal_score": float(info.get("selected_target_thermal_score", 0.0)),
         "selected_target_risk_score": float(info.get("selected_target_risk_score", 0.0)),
+        "steps_since_cover": int(info.get("steps_since_cover", 0)),
+        "route_active_density": float(info.get("route_active_density", 0.0)),
+        "route_max_age_score": float(info.get("route_max_age_score", 0.0)),
+        "route_mean_age_score": float(info.get("route_mean_age_score", 0.0)),
+        "route_nearest_distance_score": float(info.get("route_nearest_distance_score", 0.0)),
+        "route_target_thermal_score": float(info.get("route_target_thermal_score", 0.0)),
+        "route_confidence": float(info.get("route_confidence", 0.0)),
+        "route_spawn_ready": float(info.get("route_spawn_ready", 0.0)),
+        "route_stagnation_score": float(info.get("route_stagnation_score", 0.0)),
         "potential_shaping_enabled": bool(info.get("potential_shaping_enabled", True)),
         "best_progress_enabled": bool(info.get("best_progress_enabled", True)),
         "material_observation_enabled": bool(info.get("material_observation_enabled", True)),
@@ -227,6 +238,7 @@ def main():
         steam_attention_observation=config.get("use_steam_attention", False),
         spawn_history_observation=config.get("use_spawn_history_observation", False),
         thermal_context_observation=config.get("use_thermal_context_observation", False),
+        route_summary_observation=config.get("use_route_summary_observation", False),
         material_map_observation=config.get("use_material_map", False),
         attention_steam_count=config.get("attention_steam_count", 6),
         attention_steam_dim=config.get("attention_steam_dim", 8),

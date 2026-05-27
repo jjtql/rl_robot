@@ -62,6 +62,7 @@ class ShangZengEnv(gym.Env):
         steam_attention_observation=False,
         spawn_history_observation=False,
         thermal_context_observation=False,
+        route_summary_observation=False,
         material_map_observation=False,
         attention_steam_count=6,
         attention_steam_dim=8,
@@ -101,12 +102,14 @@ class ShangZengEnv(gym.Env):
         self.base_obs_dim = 35
         self.spawn_history_obs_dim = 10
         self.thermal_context_obs_dim = 8
+        self.route_summary_obs_dim = 8
         self.attention_steam_count = int(attention_steam_count)
         self.attention_steam_dim = int(attention_steam_dim)
         if self.attention_steam_dim != 8:
             raise ValueError("attention_steam_dim must be 8 for the current steam feature schema")
         self.spawn_history_observation_enabled = bool(spawn_history_observation)
         self.thermal_context_observation_enabled = bool(thermal_context_observation)
+        self.route_summary_observation_enabled = bool(route_summary_observation)
         self.steam_attention_observation_enabled = bool(steam_attention_observation)
         self.material_map_observation_enabled = bool(material_map_observation)
         self.material_map_channels = 3
@@ -216,6 +219,8 @@ class ShangZengEnv(gym.Env):
             self.base_obs_dim += self.spawn_history_obs_dim
         if self.thermal_context_observation_enabled:
             self.base_obs_dim += self.thermal_context_obs_dim
+        if self.route_summary_observation_enabled:
+            self.base_obs_dim += self.route_summary_obs_dim
         self.obs_dim = self.base_obs_dim
         if self.steam_attention_observation_enabled:
             self.obs_dim += self.attention_steam_count * self.attention_steam_dim
@@ -391,6 +396,7 @@ class ShangZengEnv(gym.Env):
     def _reset_stats(self):
         self.step_count = 0
         self.steps_since_spawn = self.spawn_cooldown_steps
+        self.steps_since_cover = 0
         self.spawned_count = 0
         self.covered_count = 0
         self.missed_count = 0
@@ -454,6 +460,7 @@ class ShangZengEnv(gym.Env):
 
     def step(self, action):
         self.step_count += 1
+        self.steps_since_cover += 1
         self.spawned_this_step_positions = []
         raw_action = self._preprocess_action(action)
         prev_action = self.last_action.copy()
@@ -503,6 +510,8 @@ class ShangZengEnv(gym.Env):
             missed_now=missed_now,
             prev_material_quality_loss=prev_material_quality_loss,
         )
+        if covered:
+            self.steps_since_cover = 0
 
         terminated = self.covered_count >= self.target_success_count and self.coverage_rate >= self.target_coverage
 
@@ -848,6 +857,57 @@ class ShangZengEnv(gym.Env):
             burst_pressure,
         ], dtype=np.float32)
 
+    def _route_summary_values(self, target_xy=None):
+        cooldown = max(int(self.spawn_cooldown_steps), 1)
+        spawn_ready = float(np.clip(self.steps_since_spawn / cooldown, 0.0, 1.0))
+        stagnation_score = float(np.clip(self.steps_since_cover / max(self.max_steam_age, 1), 0.0, 1.0))
+        values = {
+            "route_active_density": float(np.clip(len(self.steams) / max(self.max_steams, 1), 0.0, 1.0)),
+            "route_max_age_score": 0.0,
+            "route_mean_age_score": 0.0,
+            "route_nearest_distance_score": 0.0,
+            "route_target_thermal_score": 0.0,
+            "route_confidence": 0.0,
+            "route_spawn_ready": spawn_ready,
+            "route_stagnation_score": stagnation_score,
+        }
+        if not self.steams:
+            return values
+
+        risks = [self._steam_risk_components(steam) for steam in self.steams]
+        risk_scores = sorted((risk["selected_target_risk_score"] for risk in risks), reverse=True)
+        top_score = risk_scores[0]
+        second_score = risk_scores[1] if len(risk_scores) > 1 else 0.0
+        ages = [float(risk["selected_target_age_score"]) for risk in risks]
+        nearest_distance = min(float(risk["selected_target_distance"]) for risk in risks)
+        if target_xy is None:
+            target_idx = int(np.argmax([risk["selected_target_risk_score"] for risk in risks]))
+            target_xy = self.steams[target_idx]["pos"][:2]
+
+        values.update({
+            "route_max_age_score": float(np.clip(max(ages), 0.0, 1.0)),
+            "route_mean_age_score": float(np.clip(np.mean(ages), 0.0, 1.0)),
+            "route_nearest_distance_score": float(1.0 - np.clip(nearest_distance / max(self.pot_radius, 1e-6), 0.0, 1.0)),
+            "route_target_thermal_score": float(np.clip(self._thermal_score_at_xy(target_xy), 0.0, 1.0)),
+            "route_confidence": float(np.clip(top_score - second_score, 0.0, 1.0)),
+        })
+        return values
+
+    def _route_summary_features(self, target_xy=None):
+        if not self.route_summary_observation_enabled:
+            return np.zeros(0, dtype=np.float32)
+        values = self._route_summary_values(target_xy)
+        return np.array([
+            values["route_active_density"],
+            values["route_max_age_score"],
+            values["route_mean_age_score"],
+            values["route_nearest_distance_score"],
+            values["route_target_thermal_score"],
+            values["route_confidence"],
+            values["route_spawn_ready"],
+            values["route_stagnation_score"],
+        ], dtype=np.float32)
+
     def _get_obs(self):
         """
         精简观测，只保留核心信息：
@@ -942,6 +1002,8 @@ class ShangZengEnv(gym.Env):
             base_obs = np.concatenate([base_obs, self._spawn_history_features()])
         if self.thermal_context_observation_enabled:
             base_obs = np.concatenate([base_obs, self._thermal_context_features(target_xy)])
+        if self.route_summary_observation_enabled:
+            base_obs = np.concatenate([base_obs, self._route_summary_features(target_xy)])
         if self.steam_attention_observation_enabled:
             obs = np.concatenate([base_obs, self._steam_attention_features()])
         else:
@@ -1406,6 +1468,13 @@ class ShangZengEnv(gym.Env):
         else:
             thermal_xy = np.asarray(dominant_hotspot["xy"], dtype=np.float32)
             thermal_peak_score = self._thermal_score_at_xy(thermal_xy)
+        target_xy = None
+        if selected_target["selected_target_id"] >= 0:
+            target_xy = np.array([
+                selected_target["selected_target_x"],
+                selected_target["selected_target_y"],
+            ], dtype=np.float32)
+        route_summary = self._route_summary_values(target_xy)
         return {
             "coverage_rate": float(self.coverage_rate),
             "cover_latency": float(self.average_cover_latency),
@@ -1437,11 +1506,21 @@ class ShangZengEnv(gym.Env):
             "missed_count": int(self.missed_count),
             "spawned_count": int(self.spawned_count),
             "steam_count": int(len(self.steams)),
+            "steps_since_cover": int(self.steps_since_cover),
             "steam_timeout_enabled": bool(self.steam_timeout_enabled),
             "spawn_history_observation_enabled": bool(self.spawn_history_observation_enabled),
             "thermal_context_observation_enabled": bool(self.thermal_context_observation_enabled),
+            "route_summary_observation_enabled": bool(self.route_summary_observation_enabled),
             "steam_attention_observation_enabled": bool(self.steam_attention_observation_enabled),
             "material_map_observation_enabled": bool(self.material_map_observation_enabled),
+            "route_active_density": float(route_summary["route_active_density"]),
+            "route_max_age_score": float(route_summary["route_max_age_score"]),
+            "route_mean_age_score": float(route_summary["route_mean_age_score"]),
+            "route_nearest_distance_score": float(route_summary["route_nearest_distance_score"]),
+            "route_target_thermal_score": float(route_summary["route_target_thermal_score"]),
+            "route_confidence": float(route_summary["route_confidence"]),
+            "route_spawn_ready": float(route_summary["route_spawn_ready"]),
+            "route_stagnation_score": float(route_summary["route_stagnation_score"]),
             "potential_shaping_enabled": bool(self.potential_shaping_enabled),
             "best_progress_enabled": bool(self.best_progress_enabled),
             "material_observation_enabled": bool(self.material_observation_enabled),

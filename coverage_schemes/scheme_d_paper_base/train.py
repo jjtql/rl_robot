@@ -16,13 +16,24 @@ from .policies import (
     action_toward_steam,
     build_base_policy,
     combine_residual_action,
+    shield_residual_action,
     select_distance_age_steam,
     select_nearest_steam,
     select_risk_aware_steam,
 )
 
 
-BC_POLICY_CHOICES = ("nearest", "oldest", "distance_age", "risk_aware", "dynamic_weighted", "horizon2", "horizon3", "aco_tsp")
+BC_POLICY_CHOICES = (
+    "nearest",
+    "oldest",
+    "distance_age",
+    "risk_aware",
+    "dynamic_weighted",
+    "horizon2",
+    "horizon3",
+    "aco_tsp",
+    "planner_ensemble",
+)
 TARGET_SELECTOR_CHOICES = ("nearest", "risk_aware")
 STAGE_CHOICES = ("single_easy", "single_precision", "multi_low", "multi_realistic", "multi_hard", "multi_extreme")
 
@@ -70,7 +81,7 @@ def select_expert_steam(env, policy):
 
 
 def expert_action(env, policy="risk_aware"):
-    if policy in ("dynamic_weighted", "horizon2", "horizon3", "aco_tsp"):
+    if policy in ("dynamic_weighted", "horizon2", "horizon3", "aco_tsp", "planner_ensemble"):
         controller = build_base_policy(policy)
         return controller.act(env, None)
     return action_toward_steam(env, select_expert_steam(env, policy))
@@ -216,6 +227,7 @@ def build_arg_parser():
     parser.add_argument("--attention-steam-count", type=int, help="Number of active steam points exposed to the attention encoder.")
     parser.add_argument("--spawn-history-observation", action="store_true", help="Append recent steam spawn history features for LSTM prediction.")
     parser.add_argument("--thermal-context-observation", action="store_true", help="Append thermal hotspot and spawn-pressure context features.")
+    parser.add_argument("--route-summary-observation", action="store_true", help="Append planner-style route summary features.")
     parser.add_argument("--material-map", action="store_true", help="Append a compact material/frontier map and use the attention-map PPO encoder.")
     parser.add_argument("--material-tv-reward", action="store_true", help="Reward reductions in material hole/TV/overfill loss.")
     parser.add_argument("--material-tv-reward-gain", type=float, help="Gain for material TV/quality shaping.")
@@ -248,6 +260,8 @@ def build_arg_parser():
     parser.add_argument("--residual-beta-end", type=float, help="Final residual action scale after the release warmup.")
     parser.add_argument("--residual-beta-warmup-steps", type=int, help="Steps over which residual beta increases from start to end.")
     parser.add_argument("--no-residual-guard", action="store_true", help="Disable residual direction guard.")
+    parser.add_argument("--residual-action-shield", action="store_true", help="Keep residual actions from undoing planner progress.")
+    parser.add_argument("--stagnation-recovery-steps", type=int, help="Steps without coverage before the shield becomes stricter.")
     parser.add_argument("--keep-lstm-state-on-cover", action="store_true", help="Do not reset recurrent state when a steam is covered.")
     parser.add_argument("--keep-lstm-state-on-miss", action="store_true", help="Do not reset recurrent state when a steam is missed.")
     parser.add_argument("--device", help="Training device: auto, cpu, cuda, or cuda:N.")
@@ -307,6 +321,7 @@ def apply_cli_overrides(config, args):
         "residual_beta_start",
         "residual_beta_end",
         "residual_beta_warmup_steps",
+        "stagnation_recovery_steps",
         "device",
     ):
         value = getattr(args, key)
@@ -322,6 +337,9 @@ def apply_cli_overrides(config, args):
         config["use_lstm"] = True
     if args.thermal_context_observation:
         config["use_thermal_context_observation"] = True
+        config["use_lstm"] = True
+    if args.route_summary_observation:
+        config["use_route_summary_observation"] = True
         config["use_lstm"] = True
     if args.material_map:
         config["use_material_map"] = True
@@ -355,6 +373,8 @@ def apply_cli_overrides(config, args):
         config["residual_policy"] = True
     if args.no_residual_guard:
         config["residual_guard"] = False
+    if args.residual_action_shield:
+        config["residual_action_shield"] = True
     if args.keep_lstm_state_on_cover:
         config["recurrent_reset_on_cover"] = False
     if args.keep_lstm_state_on_miss:
@@ -416,6 +436,7 @@ def configure_env_from_config(env, config):
         config.get("use_spawn_history_observation", env.spawn_history_observation_enabled)
     )
     env.thermal_context_observation_enabled = bool(config.get("use_thermal_context_observation", False))
+    env.route_summary_observation_enabled = bool(config.get("use_route_summary_observation", False))
     env.steam_attention_observation_enabled = bool(
         config.get("use_steam_attention", env.steam_attention_observation_enabled)
     )
@@ -520,6 +541,7 @@ def train(config, run_path):
         steam_attention_observation=config.get("use_steam_attention", False),
         spawn_history_observation=config.get("use_spawn_history_observation", False),
         thermal_context_observation=config.get("use_thermal_context_observation", False),
+        route_summary_observation=config.get("use_route_summary_observation", False),
         material_map_observation=config.get("use_material_map", False),
         attention_steam_count=config.get("attention_steam_count", 6),
         attention_steam_dim=config.get("attention_steam_dim", 8),
@@ -624,12 +646,15 @@ def train(config, run_path):
                 f"Attention steam count: {getattr(agent, 'attention_steam_count', 0)}\n"
                 f"Spawn history obs: {config.get('use_spawn_history_observation', False)}\n"
                 f"Thermal context obs: {config.get('use_thermal_context_observation', False)}\n"
+                f"Route summary obs: {config.get('use_route_summary_observation', False)}\n"
                 f"Material map: {agent.use_material_map}\n"
                 f"Device: {agent.device}\n"
                 f"Prediction coef/horizon: {agent.pred_coef}/{config.get('prediction_horizon_steps', 0)}\n"
                 f"Material TV reward: {env.material_tv_reward_enabled}\n"
                 f"Residual policy: {config.get('residual_policy', False)}\n"
                 f"Residual base: {config.get('residual_base_policy', 'risk_aware')}\n"
+                f"Residual shield: {config.get('residual_action_shield', False)} "
+                f"(recovery={config.get('stagnation_recovery_steps', 180)})\n"
                 f"Residual beta: {config.get('residual_beta', 0.25)} "
                 f"(schedule {config.get('residual_beta_start')} -> {config.get('residual_beta_end')} "
                 f"over {config.get('residual_beta_warmup_steps', 0)} steps)\n"
@@ -682,6 +707,15 @@ def train(config, run_path):
                             beta=current_residual_beta,
                             guard=config.get("residual_guard", True),
                         )
+                        if config.get("residual_action_shield", False):
+                            a = shield_residual_action(
+                                env,
+                                base_action,
+                                a,
+                                previous_action=previous_env_action,
+                                stagnation_steps=getattr(env, "steps_since_cover", 0),
+                                recovery_steps=config.get("stagnation_recovery_steps", 180),
+                            )
                         bc_action_for_loss = np.zeros_like(raw_a, dtype=np.float32)
                     else:
                         a = raw_a
@@ -798,12 +832,15 @@ def train(config, run_path):
                     "attention_steam_count": int(getattr(agent, "attention_steam_count", 0)),
                     "use_spawn_history_observation": bool(config.get("use_spawn_history_observation", False)),
                     "use_thermal_context_observation": bool(config.get("use_thermal_context_observation", False)),
+                    "use_route_summary_observation": bool(config.get("use_route_summary_observation", False)),
                     "use_material_map": bool(agent.use_material_map),
                     "device": str(agent.device),
                     "residual_policy": bool(config.get("residual_policy", False)),
                     "residual_base_policy": str(config.get("residual_base_policy", "")),
                     "residual_beta": float(residual_beta_at_step(config, total_steps)),
                     "residual_guard": bool(config.get("residual_guard", True)),
+                    "residual_action_shield": bool(config.get("residual_action_shield", False)),
+                    "stagnation_recovery_steps": int(config.get("stagnation_recovery_steps", 180)),
                     "recurrent_reset_on_cover": bool(config.get("recurrent_reset_on_cover", True)),
                     "recurrent_reset_on_miss": bool(config.get("recurrent_reset_on_miss", True)),
                     "recurrent_hidden_resets": int(ep_hidden_resets),
@@ -812,6 +849,16 @@ def train(config, run_path):
                     "recurrent_miss_resets": int(ep_miss_resets),
                     "prediction_supervised_steps": int(len(pred_supervised_indices)),
                     "prediction_spawn_events": int(ep_spawn_events),
+                    "steps_since_cover": int(info.get("steps_since_cover", 0)),
+                    "route_summary_observation_enabled": bool(info.get("route_summary_observation_enabled", False)),
+                    "route_active_density": float(info.get("route_active_density", 0.0)),
+                    "route_max_age_score": float(info.get("route_max_age_score", 0.0)),
+                    "route_mean_age_score": float(info.get("route_mean_age_score", 0.0)),
+                    "route_nearest_distance_score": float(info.get("route_nearest_distance_score", 0.0)),
+                    "route_target_thermal_score": float(info.get("route_target_thermal_score", 0.0)),
+                    "route_confidence": float(info.get("route_confidence", 0.0)),
+                    "route_spawn_ready": float(info.get("route_spawn_ready", 0.0)),
+                    "route_stagnation_score": float(info.get("route_stagnation_score", 0.0)),
                     "material_map_observation_enabled": bool(info.get("material_map_observation_enabled", False)),
                     "potential_shaping_enabled": bool(info.get("potential_shaping_enabled", True)),
                     "best_progress_enabled": bool(info.get("best_progress_enabled", True)),

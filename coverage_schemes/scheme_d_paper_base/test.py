@@ -47,6 +47,7 @@ def test_model(
         steam_attention_observation=checkpoint_cfg.get("use_steam_attention", False),
         spawn_history_observation=checkpoint_cfg.get("use_spawn_history_observation", False),
         thermal_context_observation=checkpoint_cfg.get("use_thermal_context_observation", False),
+        route_summary_observation=checkpoint_cfg.get("use_route_summary_observation", False),
         material_map_observation=checkpoint_cfg.get("use_material_map", False),
         attention_steam_count=checkpoint_cfg.get("attention_steam_count", 6),
         attention_steam_dim=checkpoint_cfg.get("attention_steam_dim", 8),

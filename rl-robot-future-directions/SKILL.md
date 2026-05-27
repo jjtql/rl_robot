@@ -76,10 +76,12 @@ Treat single-steam settings as curriculum or sanity checks, not the main contrib
 
 Good next experiments:
 
+- Current implemented candidate: `thermal_lstm_spawnhist_ensemble_v8`. This keeps LSTM-PPO intact while adding a planner ensemble base, residual action shield, and route-summary observation. Treat it as a diagnostic for whether target selection, action safety, and LSTM memory can combine on hard/extreme stages.
 - If v6 stays mid, try `thermal_lstm_spawnhist_thermal_v7` before any bigger beta sweep: thermal-aware target scoring, `horizon2` residual base/BC expert, 8-steam attention, and the same spawn-history prediction loss.
 - Use the v6 memory candidate before more beta-only tuning: `horizon3` residual base/BC expert, 8-steam attention, thermal context observation, keep LSTM state across cover events, and restore spawn prediction loss.
 - Tune residual strength: `residual_beta` in `0.1,0.2,0.3`.
 - Compare residual bases: `horizon2`, `dynamic_weighted`, `risk_aware`.
+- Compare v8 against `horizon2`, `horizon3`, `dynamic_weighted`, and `planner_ensemble` as standalone policies before claiming PPO adds value.
 - Add map-centric state: compact material map or coverage-hole features.
 - Add reward terms for material quality, holes, or total variation.
 - Use horizon planner as an explicit baseline and BC teacher, not as hidden magic.

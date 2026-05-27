@@ -133,6 +133,119 @@ class AcoTspPolicy:
         return action_toward_steam(env, steam)
 
 
+class PlannerEnsemblePolicy:
+    name = "planner_ensemble"
+
+    def __init__(self, recovery_patience=120):
+        self.recovery_patience = int(recovery_patience)
+        self.last_target_id = None
+        self.last_target_distance = None
+        self.stagnation_steps = 0
+
+    def reset(self):
+        self.last_target_id = None
+        self.last_target_distance = None
+        self.stagnation_steps = 0
+
+    def _update_stagnation(self, env):
+        if self.last_target_id is None:
+            self.stagnation_steps = 0
+            self.last_target_distance = None
+            return
+        target = next((steam for steam in env.steams if steam.get("id") == self.last_target_id), None)
+        if target is None:
+            self.stagnation_steps = 0
+            self.last_target_distance = None
+            return
+        dist = float(np.linalg.norm(target["pos"][:2] - env.cover_center))
+        if self.last_target_distance is not None and dist >= self.last_target_distance - 0.004:
+            self.stagnation_steps += 1
+        else:
+            self.stagnation_steps = 0
+        self.last_target_distance = dist
+
+    def _candidate_targets(self, env):
+        candidates = [
+            ("horizon2", select_receding_horizon_steam(env, horizon=2)),
+            ("dynamic", select_dynamic_weighted_steam(env)),
+            ("risk", select_risk_aware_steam(env)),
+            ("nearest", select_nearest_steam(env)),
+        ]
+        if len(env.steams) >= 3:
+            candidates.append(("horizon3", select_receding_horizon_steam(env, horizon=3)))
+
+        unique = []
+        seen = set()
+        for source, steam in candidates:
+            if steam is None:
+                continue
+            steam_id = steam.get("id")
+            key = steam_id if steam_id is not None else id(steam)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append((source, steam))
+        return unique
+
+    def _score_candidate(self, env, steam, source):
+        center = np.asarray(env.cover_center, dtype=np.float32)
+        xy = steam["pos"][:2]
+        dist = float(np.linalg.norm(xy - center))
+        travel_steps = max(1.0, np.ceil(max(dist - env.cover_radius, 0.0) / max(env.track_step_size, 1e-6)))
+        age_score = float(np.clip((steam["age"] + travel_steps) / max(env.max_steam_age, 1), 0.0, 1.35))
+        risk_score = score_steam(env, steam, center)
+        thermal_score = thermal_score_at_xy(env, xy)
+        dist_norm = float(np.clip(dist / max(env.pot_radius, 1e-6), 0.0, 1.5))
+        route_bonus = 0.05 if source.startswith("horizon") else 0.0
+        if source == "dynamic":
+            route_bonus += 0.025
+        if source == "nearest" and self.stagnation_steps >= self.recovery_patience:
+            route_bonus += 0.22
+
+        switch_penalty = 0.0
+        steam_id = steam.get("id")
+        if self.last_target_id is not None and steam_id != self.last_target_id:
+            switch_penalty = 0.10
+            if self.stagnation_steps >= self.recovery_patience:
+                switch_penalty *= 0.25
+        same_target_bonus = 0.04 if steam_id == self.last_target_id else 0.0
+
+        return float(
+            1.05 * risk_score
+            + 0.32 * age_score
+            + 0.16 * thermal_score
+            + route_bonus
+            + same_target_bonus
+            - 0.10 * dist_norm
+            - 0.018 * travel_steps
+            - switch_penalty
+        )
+
+    def act(self, env, obs):
+        if not env.steams:
+            self.last_target_id = None
+            self.last_target_distance = None
+            self.stagnation_steps = 0
+            return np.zeros(env.action_space.shape[0], dtype=np.float32)
+
+        self._update_stagnation(env)
+        best_steam = None
+        best_score = -np.inf
+        for source, steam in self._candidate_targets(env):
+            score = self._score_candidate(env, steam, source)
+            if score > best_score:
+                best_score = score
+                best_steam = steam
+
+        if best_steam is None:
+            best_steam = select_receding_horizon_steam(env, horizon=2)
+        self.last_target_id = best_steam.get("id") if best_steam is not None else None
+        self.last_target_distance = (
+            float(np.linalg.norm(best_steam["pos"][:2] - env.cover_center)) if best_steam is not None else None
+        )
+        return action_toward_steam(env, best_steam)
+
+
 class PPOPolicy:
     name = "ppo"
 
@@ -165,16 +278,20 @@ class PPOPolicy:
         else:
             self.residual_beta = float(config.get("residual_beta", 0.25))
         self.residual_guard = bool(config.get("residual_guard", True))
+        self.residual_action_shield = bool(config.get("residual_action_shield", False))
+        self.stagnation_recovery_steps = int(config.get("stagnation_recovery_steps", 180))
         self.recurrent_reset_on_cover = bool(config.get("recurrent_reset_on_cover", True))
         self.recurrent_reset_on_miss = bool(config.get("recurrent_reset_on_miss", True))
         self.residual_base_policy_name = config.get("residual_base_policy", "risk_aware")
         self.residual_base_policy = build_base_policy(self.residual_base_policy_name) if self.residual_policy else None
+        self.previous_env_action = None
         if self.residual_policy:
             self.name = f"residual_{self.residual_base_policy_name}_ppo"
 
     def reset(self):
         self.hx = None
         self.cx = None
+        self.previous_env_action = None
         if self.residual_base_policy is not None:
             self.residual_base_policy.reset()
 
@@ -198,6 +315,16 @@ class PPOPolicy:
                 beta=self.residual_beta,
                 guard=self.residual_guard,
             )
+            if self.residual_action_shield:
+                action = shield_residual_action(
+                    env,
+                    base_action,
+                    action,
+                    previous_action=self.previous_env_action,
+                    stagnation_steps=getattr(env, "steps_since_cover", 0),
+                    recovery_steps=self.stagnation_recovery_steps,
+                )
+            self.previous_env_action = action.copy()
         return action.astype(np.float32)
 
 
@@ -220,6 +347,8 @@ def build_base_policy(kind):
         return RecedingHorizonPolicy(horizon=3)
     if kind == "aco_tsp":
         return AcoTspPolicy()
+    if kind == "planner_ensemble":
+        return PlannerEnsemblePolicy()
     raise ValueError(f"Unknown base policy: {kind}")
 
 
@@ -239,6 +368,85 @@ def combine_residual_action(base_action, residual_action, beta=0.25, guard=True,
         elif base_norm > 1e-6 and cand_norm <= 1e-6:
             return base_action.astype(np.float32)
     return candidate
+
+
+def shield_residual_action(
+    env,
+    base_action,
+    candidate_action,
+    previous_action=None,
+    stagnation_steps=0,
+    recovery_steps=180,
+    min_progress_margin=0.002,
+):
+    base_action = np.asarray(base_action, dtype=np.float32)
+    candidate_action = np.asarray(candidate_action, dtype=np.float32)
+    if env is None or not getattr(env, "steams", None):
+        return np.clip(candidate_action, -1.0, 1.0).astype(np.float32)
+
+    base_xy = base_action[:2]
+    base_norm = float(np.linalg.norm(base_xy))
+    target = None
+    if base_norm > 1e-6:
+        best_alignment_score = -np.inf
+        base_dir = base_xy / base_norm
+        for steam in env.steams:
+            vec = steam["pos"][:2] - env.cover_center
+            dist = float(np.linalg.norm(vec))
+            if dist <= 1e-6:
+                alignment = 1.0
+            else:
+                alignment = float(np.dot(base_dir, vec / dist))
+            alignment_score = alignment + 0.12 * score_steam(env, steam) - 0.08 * dist / max(env.pot_radius, 1e-6)
+            if alignment_score > best_alignment_score:
+                best_alignment_score = alignment_score
+                target = steam
+    if target is None:
+        target = select_receding_horizon_steam(env, horizon=2)
+    if target is None:
+        return np.clip(candidate_action, -1.0, 1.0).astype(np.float32)
+
+    center = np.asarray(env.cover_center, dtype=np.float32)
+    target_xy = target["pos"][:2]
+    current_dist = float(np.linalg.norm(target_xy - center))
+    step_scale = max(float(getattr(env, "track_step_size", 0.04)), 1e-6)
+
+    def projected_progress(action):
+        action = np.asarray(action, dtype=np.float32)
+        xy = action[:2]
+        norm = float(np.linalg.norm(xy))
+        if norm > 1.0:
+            xy = xy / norm
+        speed_scale = 0.65 + 0.35 * ((float(action[2]) + 1.0) * 0.5) if action.shape[0] > 2 else 1.0
+        projected_xy = center + xy * step_scale * speed_scale
+        return current_dist - float(np.linalg.norm(target_xy - projected_xy))
+
+    base_progress = projected_progress(base_action)
+    candidate_progress = projected_progress(candidate_action)
+    recovery_mode = int(stagnation_steps) >= int(recovery_steps)
+
+    if candidate_progress + min_progress_margin < max(0.0, 0.35 * base_progress):
+        guarded = 0.70 * base_action + 0.30 * candidate_action
+        guarded_progress = projected_progress(guarded)
+        if guarded_progress + min_progress_margin < max(0.0, 0.50 * base_progress):
+            return np.clip(base_action, -1.0, 1.0).astype(np.float32)
+        return np.clip(guarded, -1.0, 1.0).astype(np.float32)
+
+    if recovery_mode and candidate_progress + min_progress_margin < base_progress:
+        return np.clip(base_action, -1.0, 1.0).astype(np.float32)
+
+    if previous_action is not None:
+        previous_action = np.asarray(previous_action, dtype=np.float32)
+        prev_xy = previous_action[:2]
+        cand_xy = candidate_action[:2]
+        prev_norm = float(np.linalg.norm(prev_xy))
+        cand_norm = float(np.linalg.norm(cand_xy))
+        if prev_norm > 1e-6 and cand_norm > 1e-6:
+            turn_alignment = float(np.dot(prev_xy, cand_xy) / (prev_norm * cand_norm + 1e-8))
+            if turn_alignment < -0.55 and candidate_progress < base_progress:
+                return np.clip(0.55 * base_action + 0.45 * candidate_action, -1.0, 1.0).astype(np.float32)
+
+    return np.clip(candidate_action, -1.0, 1.0).astype(np.float32)
 
 
 def select_nearest_steam(env):
@@ -484,7 +692,18 @@ def action_toward_steam(env, steam):
 
 
 def build_policy(kind, env, model_path=None, deterministic=True, config_override=None):
-    if kind in ("random", "nearest", "oldest", "distance_age", "risk_aware", "dynamic_weighted", "horizon2", "horizon3", "aco_tsp"):
+    if kind in (
+        "random",
+        "nearest",
+        "oldest",
+        "distance_age",
+        "risk_aware",
+        "dynamic_weighted",
+        "horizon2",
+        "horizon3",
+        "aco_tsp",
+        "planner_ensemble",
+    ):
         return build_base_policy(kind)
     if kind == "ppo":
         if not model_path:
