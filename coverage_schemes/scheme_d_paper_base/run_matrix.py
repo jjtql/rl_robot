@@ -40,6 +40,14 @@ def summarize(rows):
         "missed_count",
         "cover_latency",
         "cover_latency_seconds",
+        "cover_latency_p50_seconds",
+        "cover_latency_p90_seconds",
+        "cover_latency_p95_seconds",
+        "cover_latency_max_seconds",
+        "response_sla_success_rate",
+        "active_steam_mean",
+        "active_steam_max",
+        "oldest_active_age_max_seconds",
         "per_point_cover_speed",
         "covered_per_second",
         "spawned_per_second",
@@ -163,6 +171,8 @@ def main():
                         f"{policy_name} | {stage} | max_steams {env.max_steams} | seed {seed} | "
                         f"R:{summary['episode_reward_mean']:.2f} | Cov:{summary['coverage_rate_mean']:.2f} | "
                         f"Lat:{summary['cover_latency_seconds_mean']:.3f}s | "
+                        f"P90:{summary['cover_latency_p90_seconds_mean']:.3f}s | "
+                        f"SLA:{summary['response_sla_success_rate_mean']:.2f} | "
                         f"Rate:{summary['covered_per_second_mean']:.2f}/s | "
                         f"Miss:{summary['missed_count_mean']:.2f}",
                         flush=True,

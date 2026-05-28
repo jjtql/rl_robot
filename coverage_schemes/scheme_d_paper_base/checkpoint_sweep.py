@@ -74,6 +74,9 @@ def summarize_checkpoint(rows, checkpoint, tag):
         "coverage_rate_mean",
         "missed_count_mean",
         "cover_latency_seconds_mean",
+        "cover_latency_p90_seconds_mean",
+        "response_sla_success_rate_mean",
+        "active_steam_mean_mean",
         "covered_per_second_mean",
         "covered_per_100_steps_mean",
         "target_distance_mean",
@@ -125,7 +128,14 @@ def build_arg_parser():
     parser.add_argument("--seeds", default="100,101,102")
     parser.add_argument("--episodes", type=int, default=5)
     parser.add_argument("--steps", type=int, default=800)
+    parser.add_argument("--demo-mode", action="store_true", help="Pass --demo-mode to run_matrix for long continuous-session evaluation.")
     parser.add_argument("--device", help="Device override passed to run_matrix.")
+    parser.add_argument(
+        "--rank-objective",
+        choices=["coverage", "latency"],
+        default="coverage",
+        help="Rank checkpoints by coverage-first legacy score or latency/SLA-first response score.",
+    )
     parser.add_argument("--python", default=".venv/bin/python")
     parser.add_argument("--output-dir", help="Output root. Defaults to runs/matrix/checkpoint_sweeps/<run>.")
     return parser
@@ -173,6 +183,8 @@ def main():
         ]
         if args.device:
             command.extend(["--device", args.device])
+        if args.demo_mode:
+            command.append("--demo-mode")
         print(f"\n=== checkpoint {tag} ===", flush=True)
         subprocess.run(command, check=True)
         all_rows.extend(summarize_checkpoint(read_summary(out_dir / "summary.csv"), checkpoint, tag))
@@ -186,16 +198,28 @@ def main():
             row for row in all_rows
             if row["policy"] == "ppo" and row["stage"] == stage
         ]
-        candidates.sort(
-            key=lambda row: (
-                float(row["coverage_rate_mean_across_seeds"]),
-                float(row["episode_reward_mean_across_seeds"]),
-                -float(row["cover_latency_seconds_mean_across_seeds"]),
-            ),
-            reverse=True,
-        )
+        if args.rank_objective == "latency":
+            candidates.sort(
+                key=lambda row: (
+                    float(row["response_sla_success_rate_mean_across_seeds"]),
+                    -float(row["cover_latency_p90_seconds_mean_across_seeds"]),
+                    float(row["covered_per_second_mean_across_seeds"]),
+                    -float(row["missed_count_mean_across_seeds"]),
+                    float(row["coverage_rate_mean_across_seeds"]),
+                ),
+                reverse=True,
+            )
+        else:
+            candidates.sort(
+                key=lambda row: (
+                    float(row["coverage_rate_mean_across_seeds"]),
+                    float(row["episode_reward_mean_across_seeds"]),
+                    -float(row["cover_latency_seconds_mean_across_seeds"]),
+                ),
+                reverse=True,
+            )
         if candidates:
-            print(f"\nTop PPO checkpoints for {stage}:", flush=True)
+            print(f"\nTop PPO checkpoints for {stage} ({args.rank_objective}):", flush=True)
             for row in candidates[:5]:
                 print(
                     f"{row['checkpoint_tag']:>18} | "
@@ -203,6 +227,8 @@ def main():
                     f"+/- {float(row['coverage_rate_mean_std_across_seeds']):.3f} | "
                     f"R {float(row['episode_reward_mean_across_seeds']):.1f} | "
                     f"Lat {float(row['cover_latency_seconds_mean_across_seeds']):.3f}s | "
+                    f"P90 {float(row['cover_latency_p90_seconds_mean_across_seeds']):.3f}s | "
+                    f"SLA {float(row['response_sla_success_rate_mean_across_seeds']):.2f} | "
                     f"Rate {float(row['covered_per_second_mean_across_seeds']):.2f}/s",
                     flush=True,
                 )

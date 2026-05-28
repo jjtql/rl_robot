@@ -248,6 +248,16 @@ def build_arg_parser():
     parser.add_argument("--age-penalty-scale", type=float, help="Multiplier for active-steam age penalty.")
     parser.add_argument("--no-material-observation", action="store_true", help="Zero material and material-risk observation features.")
     parser.add_argument("--no-action-smoothing-penalty", action="store_true", help="Disable action delta/L2 reward penalty.")
+    parser.add_argument("--latency-first-reward", action="store_true", help="Prioritize response latency, SLA, and backlog in reward shaping.")
+    parser.add_argument("--cover-latency-penalty-gain", type=float, help="Per-cover latency penalty gain used by --latency-first-reward.")
+    parser.add_argument("--oldest-active-penalty-gain", type=float, help="Per-step penalty for the oldest active steam age.")
+    parser.add_argument("--backlog-penalty-gain", type=float, help="Per-step penalty for active steam backlog.")
+    parser.add_argument("--response-sla-steps", type=int, help="Latency target in simulator steps for response-speed metrics and reward.")
+    parser.add_argument("--response-sla-bonus", type=float, help="Bonus for covering before response SLA.")
+    parser.add_argument("--response-sla-miss-penalty", type=float, help="Penalty for covering after response SLA.")
+    parser.add_argument("--continuous-session-chunks", type=int, help="Number of episode windows kept inside one physical session.")
+    parser.add_argument("--carry-lstm-state-across-chunks", action="store_true", help="Carry LSTM hidden state across continuous-session chunks.")
+    parser.add_argument("--lstm-sequence-chunks", type=int, help="Number of episode windows per PPO recurrent training sequence.")
     parser.add_argument("--action-delay-steps", type=int, help="Apply an N-step command delay during training.")
     parser.add_argument("--action-noise-std", type=float, help="Stddev of Gaussian action noise inside the environment.")
     parser.add_argument("--domain-randomization", action="store_true", help="Randomize motion/material parameters at episode reset.")
@@ -374,6 +384,14 @@ def apply_cli_overrides(config, args):
         "best_progress_gain_scale",
         "active_steam_penalty_scale",
         "age_penalty_scale",
+        "cover_latency_penalty_gain",
+        "oldest_active_penalty_gain",
+        "backlog_penalty_gain",
+        "response_sla_steps",
+        "response_sla_bonus",
+        "response_sla_miss_penalty",
+        "continuous_session_chunks",
+        "lstm_sequence_chunks",
         "device",
     ):
         value = getattr(args, key)
@@ -417,6 +435,10 @@ def apply_cli_overrides(config, args):
         config["material_observation"] = False
     if args.no_action_smoothing_penalty:
         config["action_smoothing_penalty"] = False
+    if args.latency_first_reward:
+        config["latency_first_reward"] = True
+    if args.carry_lstm_state_across_chunks:
+        config["carry_lstm_state_across_chunks"] = True
     if args.domain_randomization:
         config["domain_randomization"] = True
     if args.no_thermal_spawn:
@@ -476,6 +498,13 @@ def configure_env_from_config(env, config):
     env.material_tv_reward_enabled = bool(config.get("material_tv_reward", False))
     env.material_tv_reward_gain = float(config.get("material_tv_reward_gain", env.material_tv_reward_gain))
     env.action_penalty_enabled = bool(config.get("action_smoothing_penalty", True))
+    env.latency_first_reward_enabled = bool(config.get("latency_first_reward", False))
+    env.cover_latency_penalty_gain = float(config.get("cover_latency_penalty_gain", env.cover_latency_penalty_gain))
+    env.oldest_active_penalty_gain = float(config.get("oldest_active_penalty_gain", env.oldest_active_penalty_gain))
+    env.backlog_penalty_gain = float(config.get("backlog_penalty_gain", env.backlog_penalty_gain))
+    env.response_sla_steps = int(config.get("response_sla_steps", env.response_sla_steps))
+    env.response_sla_bonus = float(config.get("response_sla_bonus", env.response_sla_bonus))
+    env.response_sla_miss_penalty = float(config.get("response_sla_miss_penalty", env.response_sla_miss_penalty))
     env.action_delay_steps = int(config.get("action_delay_steps", 0))
     env.action_noise_std = float(config.get("action_noise_std", 0.0))
     env.domain_randomization_enabled = bool(config.get("domain_randomization", False))
@@ -625,10 +654,12 @@ def train(config, run_path):
     configure_env_from_config(env, config)
     obs_dim = env.observation_space.shape[0]
     config["base_obs_dim"] = int(env.base_obs_dim)
+    recurrent_sequence_steps = int(config["episode_steps"]) * max(int(config.get("lstm_sequence_chunks", 1)), 1)
+    config["recurrent_sequence_steps"] = int(recurrent_sequence_steps)
     agent = PPOAgent(
         obs_dim,
         env.action_space.shape[0],
-        seq_len=config["episode_steps"],
+        seq_len=recurrent_sequence_steps,
         use_lstm=config.get("use_lstm", True),
         use_steam_attention=config.get("use_steam_attention", False),
         use_material_map=config.get("use_material_map", False),
@@ -655,7 +686,7 @@ def train(config, run_path):
     if not config.get("action_smoothing_penalty", True):
         agent.smooth_coef = 0.0
         agent.action_l2_coef = 0.0
-    update_timestep = config["update_episodes"] * config["episode_steps"]
+    update_timestep = max(config["update_episodes"] * config["episode_steps"], recurrent_sequence_steps)
 
     logger = RunLogger(run_path)
     save_config(config, Path(run_path) / "config.json")
@@ -746,6 +777,12 @@ def train(config, run_path):
                 f"Residual beta: {config.get('residual_beta', 0.25)} "
                 f"(schedule {config.get('residual_beta_start')} -> {config.get('residual_beta_end')} "
                 f"over {config.get('residual_beta_warmup_steps', 0)} steps)\n"
+                f"Latency-first reward: {env.latency_first_reward_enabled} "
+                f"(sla={env.response_sla_steps}, latency_gain={env.cover_latency_penalty_gain}, "
+                f"oldest_gain={env.oldest_active_penalty_gain}, backlog_gain={env.backlog_penalty_gain})\n"
+                f"Continuous session chunks: {config.get('continuous_session_chunks', 1)} "
+                f"(carry_lstm={config.get('carry_lstm_state_across_chunks', False)}, "
+                f"seq_steps={config.get('recurrent_sequence_steps', config['episode_steps'])})\n"
                 f"Action delay/noise: {env.action_delay_steps}/{env.action_noise_std}\n"
                 f"Domain randomization: {env.domain_randomization_enabled}\n"
                 f"Thermal spawn: {env.thermal_spawn_enabled} "
@@ -764,11 +801,29 @@ def train(config, run_path):
             stage_coverages = []
             residual_base_controller = build_residual_base_policy(config)
             bc_controller = build_base_policy(config.get("bc_policy", "risk_aware"))
+            session_chunks = max(int(config.get("continuous_session_chunks", 1)), 1)
+            carry_session_hidden = (
+                bool(config.get("carry_lstm_state_across_chunks", False))
+                and bool(agent.use_lstm)
+                and session_chunks > 1
+            )
+            session_hx, session_cx = None, None
 
             for ep_in_stage in range(stage["episodes"]):
-                s, info = env.reset(seed=int(config["seed"]) + global_ep)
-                residual_base_controller.reset()
-                bc_controller.reset()
+                chunk_index = ep_in_stage % session_chunks
+                new_session = chunk_index == 0
+                last_session_chunk = chunk_index == session_chunks - 1 or ep_in_stage == stage["episodes"] - 1
+                if new_session:
+                    s, info = env.reset(seed=int(config["seed"]) + global_ep)
+                    residual_base_controller.reset()
+                    bc_controller.reset()
+                    session_hx, session_cx = None, None
+                else:
+                    s, info = env.start_new_chunk()
+                    if not carry_session_hidden:
+                        residual_base_controller.reset()
+                        bc_controller.reset()
+                        session_hx, session_cx = None, None
                 ep_r = 0.0
                 ep_covered = 0
                 ep_action_delta = []
@@ -782,10 +837,10 @@ def train(config, run_path):
                 ep_residual_base_counts = defaultdict(int)
                 ep_residual_betas = []
                 pred_supervised_indices = set()
-                hx, cx = None, None
+                hx, cx = (session_hx, session_cx) if carry_session_hidden and not new_session else (None, None)
                 previous_missed = info.get("missed_count", 0)
                 previous_action = np.zeros(env.action_space.shape[0], dtype=np.float32)
-                previous_env_action = np.zeros(env.action_space.shape[0], dtype=np.float32)
+                previous_env_action = np.asarray(getattr(env, "last_action", previous_action), dtype=np.float32).copy()
                 episode_memory_indices = []
 
                 for _ in range(config["episode_steps"]):
@@ -836,7 +891,13 @@ def train(config, run_path):
                     memory["r"].append(r_ext)
                     memory["lp"].append(lp)
                     memory["v"].append(v)
-                    memory["d"].append(float(terminated or truncated))
+                    continues_after_chunk = (
+                        carry_session_hidden
+                        and truncated
+                        and not terminated
+                        and not last_session_chunk
+                    )
+                    memory["d"].append(float(terminated or (truncated and not continues_after_chunk)))
                     memory["reset"].append(hidden_reset)
                     memory["pred_target"].append(info["pred_target"])
                     memory["pred_mask"].append(info["pred_mask"])
@@ -895,6 +956,11 @@ def train(config, run_path):
                     if terminated or truncated:
                         break
 
+                if carry_session_hidden and not last_session_chunk and not terminated:
+                    session_hx, session_cx = hx, cx
+                else:
+                    session_hx, session_cx = None, None
+
                 global_ep += 1
                 smooth_reward = 0.95 * smooth_reward + 0.05 * ep_r
                 ep_spawned = info.get("spawned_count", 0)
@@ -916,11 +982,24 @@ def train(config, run_path):
                     "episode_reward": float(ep_r),
                     "smooth_reward": float(smooth_reward),
                     "coverage_rate": float(ep_coverage),
+                    "chunk_success_count": int(ep_covered),
                     "success_count": int(info.get("success_count", 0)),
                     "spawned_count": int(ep_spawned),
                     "missed_count": int(info.get("missed_count", 0)),
                     "cover_latency": float(info.get("cover_latency", 0.0)),
                     "last_cover_latency": float(info.get("last_cover_latency", 0.0)),
+                    "cover_latency_p50": float(info.get("cover_latency_p50", 0.0)),
+                    "cover_latency_p90": float(info.get("cover_latency_p90", 0.0)),
+                    "cover_latency_p95": float(info.get("cover_latency_p95", 0.0)),
+                    "cover_latency_max": float(info.get("cover_latency_max", 0.0)),
+                    "response_sla_steps": int(info.get("response_sla_steps", 0)),
+                    "response_sla_success_count": int(info.get("response_sla_success_count", 0)),
+                    "response_sla_miss_count": int(info.get("response_sla_miss_count", 0)),
+                    "response_sla_success_rate": float(info.get("response_sla_success_rate", 0.0)),
+                    "active_steam_mean": float(info.get("active_steam_mean", 0.0)),
+                    "active_steam_max": int(info.get("active_steam_max", 0)),
+                    "oldest_active_age": float(info.get("oldest_active_age", 0.0)),
+                    "oldest_active_age_max": float(info.get("oldest_active_age_max", 0.0)),
                     "target_distance": float(info.get("target_distance", 0.0)),
                     "target_selector": str(info.get("target_selector", "")),
                     "selected_target_id": int(info.get("selected_target_id", -1)),
@@ -963,6 +1042,11 @@ def train(config, run_path):
                     "stagnation_recovery_steps": int(config.get("stagnation_recovery_steps", 180)),
                     "recurrent_reset_on_cover": bool(config.get("recurrent_reset_on_cover", True)),
                     "recurrent_reset_on_miss": bool(config.get("recurrent_reset_on_miss", True)),
+                    "continuous_session_chunks": int(session_chunks),
+                    "continuous_session_chunk_index": int(chunk_index + 1),
+                    "continuous_session_new": bool(new_session),
+                    "carry_lstm_state_across_chunks": bool(carry_session_hidden),
+                    "recurrent_sequence_steps": int(config.get("recurrent_sequence_steps", config["episode_steps"])),
                     "recurrent_hidden_resets": int(ep_hidden_resets),
                     "recurrent_cover_resets": int(ep_cover_resets),
                     "recurrent_cover_keeps": int(ep_cover_keeps),
@@ -982,6 +1066,10 @@ def train(config, run_path):
                     "material_map_observation_enabled": bool(info.get("material_map_observation_enabled", False)),
                     "potential_shaping_enabled": bool(info.get("potential_shaping_enabled", True)),
                     "best_progress_enabled": bool(info.get("best_progress_enabled", True)),
+                    "latency_first_reward_enabled": bool(info.get("latency_first_reward_enabled", False)),
+                    "cover_latency_penalty_gain": float(info.get("cover_latency_penalty_gain", 0.0)),
+                    "oldest_active_penalty_gain": float(info.get("oldest_active_penalty_gain", 0.0)),
+                    "backlog_penalty_gain": float(info.get("backlog_penalty_gain", 0.0)),
                     "material_observation_enabled": bool(info.get("material_observation_enabled", True)),
                     "material_tv_reward_enabled": bool(info.get("material_tv_reward_enabled", False)),
                     "material_tv_reward_gain": float(info.get("material_tv_reward_gain", 0.0)),
@@ -1026,9 +1114,11 @@ def train(config, run_path):
                         f"Ep:{global_ep}/{total_curriculum_episodes} | "
                         f"{stage['name']}({ep_in_stage+1}/{stage['episodes']}) | "
                         f"R:{ep_r:.1f} | Smooth:{smooth_reward:.1f} | "
-                        f"Cov:{ep_coverage:.2f} ({ep_covered}/{ep_spawned}) | "
+                        f"Cov:{ep_coverage:.2f} ({info.get('success_count', ep_covered)}/{ep_spawned}) | "
                         f"Dist:{info.get('target_distance', 0):.3f} | "
-                        f"Lat:{info.get('cover_latency', 0):.0f}",
+                        f"Lat:{info.get('cover_latency', 0):.0f} "
+                        f"P90:{info.get('cover_latency_p90', 0):.0f} "
+                        f"SLA:{info.get('response_sla_success_rate', 0):.2f}",
                         flush=True,
                     )
 

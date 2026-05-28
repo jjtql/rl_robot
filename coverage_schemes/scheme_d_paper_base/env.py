@@ -163,6 +163,13 @@ class ShangZengEnv(gym.Env):
         self.action_l2_penalty_gain = 0.004
         self.potential_shaping_enabled = True
         self.best_progress_enabled = True
+        self.latency_first_reward_enabled = False
+        self.cover_latency_penalty_gain = 14.0
+        self.oldest_active_penalty_gain = 0.08
+        self.backlog_penalty_gain = 0.04
+        self.response_sla_steps = 120
+        self.response_sla_bonus = 6.0
+        self.response_sla_miss_penalty = 8.0
         self.cover_reward_scale = 1.0
         self.quick_cover_bonus_scale = 1.0
         self.precision_bonus_scale = 1.0
@@ -443,7 +450,14 @@ class ShangZengEnv(gym.Env):
         self.covered_count = 0
         self.missed_count = 0
         self.total_cover_latency = 0.0
+        self.cover_latencies = []
         self.last_cover_latency = 0.0
+        self.response_sla_success_count = 0
+        self.response_sla_miss_count = 0
+        self.metric_step_count = 0
+        self.active_steam_step_sum = 0.0
+        self.active_steam_max = 0
+        self.oldest_active_age_max = 0.0
         self.prev_layer_progress = 0.0
 
     def reset(self, seed=None, options=None):
@@ -506,6 +520,14 @@ class ShangZengEnv(gym.Env):
         self._hide_prediction_marker()
         self.set_cover_marker()
 
+        obs = self._get_obs()
+        self.last_info = self._make_info(0.0, False)
+        return obs, self.last_info.copy()
+
+    def start_new_chunk(self):
+        """Start a new training window without clearing the physical session."""
+        self.step_count = 0
+        self.spawned_this_step_positions = []
         obs = self._get_obs()
         self.last_info = self._make_info(0.0, False)
         return obs, self.last_info.copy()
@@ -590,6 +612,7 @@ class ShangZengEnv(gym.Env):
         self._sync_steam_sites()
         self._update_material_visualization()
         self.set_cover_marker()
+        self._record_response_pressure_metrics()
 
         truncated = self.step_count >= self.max_episode_steps
         obs = self._get_obs()
@@ -626,6 +649,23 @@ class ShangZengEnv(gym.Env):
         if self.covered_count == 0:
             return 0.0
         return self.total_cover_latency / self.covered_count
+
+    @property
+    def active_steam_mean(self):
+        if self.metric_step_count <= 0:
+            return 0.0
+        return self.active_steam_step_sum / self.metric_step_count
+
+    @property
+    def response_sla_success_rate(self):
+        if self.covered_count == 0:
+            return 0.0
+        return self.response_sla_success_count / self.covered_count
+
+    def cover_latency_percentile(self, percentile):
+        if not self.cover_latencies:
+            return 0.0
+        return float(np.percentile(np.asarray(self.cover_latencies, dtype=np.float32), float(percentile)))
 
     @property
     def valid_material(self):
@@ -1148,14 +1188,25 @@ class ShangZengEnv(gym.Env):
             "best_progress": 0.0,
             "material_tv": 0.0,
             "cover": 0.0,
+            "latency": 0.0,
+            "oldest_active": 0.0,
+            "backlog": 0.0,
+            "sla": 0.0,
             "miss": -self.miss_penalty * missed_now,
             "action": 0.0,
             "success": 0.0,
         }
         if self.steams:
-            mean_age = float(np.mean([steam["age"] for steam in self.steams]))
+            ages = [steam["age"] for steam in self.steams]
+            mean_age = float(np.mean(ages))
             age_ratio = min(mean_age / max(self.max_steam_age, 1), 1.0)
             terms["age"] = -self.age_penalty_gain * age_ratio
+            if self.latency_first_reward_enabled:
+                oldest_age = float(max(ages))
+                oldest_ratio = min(oldest_age / max(self.max_steam_age, 1), 2.0)
+                backlog_ratio = min(len(self.steams) / max(self.max_steams, 1), 2.0)
+                terms["oldest_active"] = -self.oldest_active_penalty_gain * oldest_ratio
+                terms["backlog"] = -self.backlog_penalty_gain * backlog_ratio
 
         if self.action_penalty_enabled:
             terms["action"] = -self.action_delta_penalty_gain * action_delta - self.action_l2_penalty_gain * float(np.dot(action, action))
@@ -1187,9 +1238,23 @@ class ShangZengEnv(gym.Env):
                 latency = float(steam["age"])
                 self.last_cover_latency = latency
                 self.total_cover_latency += latency
+                self.cover_latencies.append(latency)
+                sla_steps = max(int(self.response_sla_steps), 1)
+                if latency <= sla_steps:
+                    self.response_sla_success_count += 1
+                else:
+                    self.response_sla_miss_count += 1
                 quickness = 1.0 - min(latency / max(self.max_steam_age, 1), 1.0)
                 precision = 1.0 - min(dist / max(self.cover_radius, 1e-6), 1.0)
                 terms["cover"] += self.cover_reward + self.quick_cover_bonus * quickness + self.precision_bonus * precision
+                if self.latency_first_reward_enabled:
+                    latency_ratio = min(latency / max(sla_steps, 1), 2.0)
+                    terms["latency"] -= self.cover_latency_penalty_gain * latency_ratio
+                    if latency <= sla_steps:
+                        terms["sla"] += self.response_sla_bonus * (1.0 - latency / max(sla_steps, 1))
+                    else:
+                        miss_ratio = min((latency - sla_steps) / max(sla_steps, 1), 2.0)
+                        terms["sla"] -= self.response_sla_miss_penalty * miss_ratio
                 self._deposit_material(steam["pos"][:2], self.cover_deposit_rate)
                 self.steam_best_potential.pop(steam_id, None)
             else:
@@ -1206,6 +1271,15 @@ class ShangZengEnv(gym.Env):
 
         self.last_reward_terms = {key: float(value) for key, value in terms.items()}
         return float(sum(terms.values())), covered
+
+    def _record_response_pressure_metrics(self):
+        self.metric_step_count += 1
+        active_count = int(len(self.steams))
+        self.active_steam_step_sum += float(active_count)
+        self.active_steam_max = max(int(self.active_steam_max), active_count)
+        if self.steams:
+            oldest_age = float(max(steam["age"] for steam in self.steams))
+            self.oldest_active_age_max = max(float(self.oldest_active_age_max), oldest_age)
 
     def _reachable_grid_mask(self):
         mask = self.grid_mask.copy()
@@ -1638,6 +1712,18 @@ class ShangZengEnv(gym.Env):
             "coverage_rate": float(self.coverage_rate),
             "cover_latency": float(self.average_cover_latency),
             "last_cover_latency": float(self.last_cover_latency),
+            "cover_latency_p50": float(self.cover_latency_percentile(50)),
+            "cover_latency_p90": float(self.cover_latency_percentile(90)),
+            "cover_latency_p95": float(self.cover_latency_percentile(95)),
+            "cover_latency_max": float(max(self.cover_latencies) if self.cover_latencies else 0.0),
+            "response_sla_steps": int(self.response_sla_steps),
+            "response_sla_success_count": int(self.response_sla_success_count),
+            "response_sla_miss_count": int(self.response_sla_miss_count),
+            "response_sla_success_rate": float(self.response_sla_success_rate),
+            "active_steam_mean": float(self.active_steam_mean),
+            "active_steam_max": int(self.active_steam_max),
+            "oldest_active_age": float(max([steam["age"] for steam in self.steams], default=0.0)),
+            "oldest_active_age_max": float(self.oldest_active_age_max),
             "ee_velocity": float(ee_velocity),
             "target_distance": float(target_distance),
             "target_selector": selected_target["target_selector"],
@@ -1682,6 +1768,12 @@ class ShangZengEnv(gym.Env):
             "route_stagnation_score": float(route_summary["route_stagnation_score"]),
             "potential_shaping_enabled": bool(self.potential_shaping_enabled),
             "best_progress_enabled": bool(self.best_progress_enabled),
+            "latency_first_reward_enabled": bool(self.latency_first_reward_enabled),
+            "cover_latency_penalty_gain": float(self.cover_latency_penalty_gain),
+            "oldest_active_penalty_gain": float(self.oldest_active_penalty_gain),
+            "backlog_penalty_gain": float(self.backlog_penalty_gain),
+            "response_sla_bonus": float(self.response_sla_bonus),
+            "response_sla_miss_penalty": float(self.response_sla_miss_penalty),
             "material_observation_enabled": bool(self.material_observation_enabled),
             "material_tv_reward_enabled": bool(self.material_tv_reward_enabled),
             "material_tv_reward_gain": float(self.material_tv_reward_gain),

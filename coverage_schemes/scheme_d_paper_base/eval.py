@@ -53,6 +53,13 @@ def configure_env_from_config(env, config):
     env.material_tv_reward_enabled = bool(config.get("material_tv_reward", False))
     env.material_tv_reward_gain = float(config.get("material_tv_reward_gain", env.material_tv_reward_gain))
     env.action_penalty_enabled = bool(config.get("action_smoothing_penalty", True))
+    env.latency_first_reward_enabled = bool(config.get("latency_first_reward", False))
+    env.cover_latency_penalty_gain = float(config.get("cover_latency_penalty_gain", env.cover_latency_penalty_gain))
+    env.oldest_active_penalty_gain = float(config.get("oldest_active_penalty_gain", env.oldest_active_penalty_gain))
+    env.backlog_penalty_gain = float(config.get("backlog_penalty_gain", env.backlog_penalty_gain))
+    env.response_sla_steps = int(config.get("response_sla_steps", env.response_sla_steps))
+    env.response_sla_bonus = float(config.get("response_sla_bonus", env.response_sla_bonus))
+    env.response_sla_miss_penalty = float(config.get("response_sla_miss_penalty", env.response_sla_miss_penalty))
     env.action_delay_steps = int(config.get("action_delay_steps", 0))
     env.action_noise_std = float(config.get("action_noise_std", 0.0))
     env.domain_randomization_enabled = bool(config.get("domain_randomization", False))
@@ -163,6 +170,7 @@ def evaluate_episode(env, policy, seed, max_steps, demo_mode=False):
         cover_latency_steps=cover_latency_steps,
         step_seconds=env_step_seconds(env),
     )
+    step_seconds = timing["step_seconds"]
 
     metrics = {
         "steps": steps,
@@ -173,6 +181,24 @@ def evaluate_episode(env, policy, seed, max_steps, demo_mode=False):
         "missed_count": int(info.get("missed_count", 0)),
         "cover_latency": cover_latency_steps,
         "last_cover_latency": float(info.get("last_cover_latency", 0.0)),
+        "cover_latency_p50": float(info.get("cover_latency_p50", 0.0)),
+        "cover_latency_p90": float(info.get("cover_latency_p90", 0.0)),
+        "cover_latency_p95": float(info.get("cover_latency_p95", 0.0)),
+        "cover_latency_max": float(info.get("cover_latency_max", 0.0)),
+        "cover_latency_p50_seconds": float(info.get("cover_latency_p50", 0.0)) * step_seconds,
+        "cover_latency_p90_seconds": float(info.get("cover_latency_p90", 0.0)) * step_seconds,
+        "cover_latency_p95_seconds": float(info.get("cover_latency_p95", 0.0)) * step_seconds,
+        "cover_latency_max_seconds": float(info.get("cover_latency_max", 0.0)) * step_seconds,
+        "response_sla_steps": int(info.get("response_sla_steps", 0)),
+        "response_sla_seconds": float(info.get("response_sla_steps", 0)) * step_seconds,
+        "response_sla_success_count": int(info.get("response_sla_success_count", 0)),
+        "response_sla_miss_count": int(info.get("response_sla_miss_count", 0)),
+        "response_sla_success_rate": float(info.get("response_sla_success_rate", 0.0)),
+        "active_steam_mean": float(info.get("active_steam_mean", 0.0)),
+        "active_steam_max": int(info.get("active_steam_max", 0)),
+        "oldest_active_age": float(info.get("oldest_active_age", 0.0)),
+        "oldest_active_age_max": float(info.get("oldest_active_age_max", 0.0)),
+        "oldest_active_age_max_seconds": float(info.get("oldest_active_age_max", 0.0)) * step_seconds,
         "target_distance": float(info.get("target_distance", 0.0)),
         "target_selector": str(info.get("target_selector", "")),
         "spawn_history_observation_enabled": bool(info.get("spawn_history_observation_enabled", False)),
@@ -202,6 +228,7 @@ def evaluate_episode(env, policy, seed, max_steps, demo_mode=False):
         "route_stagnation_score": float(info.get("route_stagnation_score", 0.0)),
         "potential_shaping_enabled": bool(info.get("potential_shaping_enabled", True)),
         "best_progress_enabled": bool(info.get("best_progress_enabled", True)),
+        "latency_first_reward_enabled": bool(info.get("latency_first_reward_enabled", False)),
         "material_observation_enabled": bool(info.get("material_observation_enabled", True)),
         "material_tv_reward_enabled": bool(info.get("material_tv_reward_enabled", False)),
         "action_penalty_enabled": bool(info.get("action_penalty_enabled", True)),
@@ -312,6 +339,8 @@ def main():
             f"stage:{args.stage} | R:{metrics['episode_reward']:.1f} | "
             f"Cov:{metrics['coverage_rate']:.2f} | "
             f"Lat:{metrics['cover_latency_seconds']:.3f}s | "
+            f"P90:{metrics['cover_latency_p90_seconds']:.3f}s | "
+            f"SLA:{metrics['response_sla_success_rate']:.2f} | "
             f"Rate:{metrics['covered_per_second']:.2f}/s | "
             f"Miss:{metrics['missed_count']}",
             flush=True,
@@ -322,6 +351,9 @@ def main():
         "episodes": len(rows),
         "coverage_mean": float(np.mean([row["coverage_rate"] for row in rows])) if rows else 0.0,
         "cover_latency_seconds_mean": float(np.mean([row["cover_latency_seconds"] for row in rows])) if rows else 0.0,
+        "cover_latency_p90_seconds_mean": float(np.mean([row["cover_latency_p90_seconds"] for row in rows])) if rows else 0.0,
+        "response_sla_success_rate_mean": float(np.mean([row["response_sla_success_rate"] for row in rows])) if rows else 0.0,
+        "active_steam_mean": float(np.mean([row["active_steam_mean"] for row in rows])) if rows else 0.0,
         "covered_per_second_mean": float(np.mean([row["covered_per_second"] for row in rows])) if rows else 0.0,
         "per_point_cover_speed_mean": float(np.mean([row["per_point_cover_speed"] for row in rows])) if rows else 0.0,
         "missed_mean": float(np.mean([row["missed_count"] for row in rows])) if rows else 0.0,

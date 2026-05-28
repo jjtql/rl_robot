@@ -64,9 +64,66 @@ Interpretation:
 
 ## Current Candidate
 
-Current next method: `thermal_lstm_spawnhist_glue_v10`.
+Current next method: `thermal_lstm_spawnhist_latency_v11`.
 
-Goal: keep LSTM-PPO unchanged, but change planner/RL composition so each component is used where it is strongest.
+Goal: keep LSTM-PPO unchanged, but make the training/evaluation objective match the real ShangZeng process: a continuous roughly two-hour covering task where response time, response speed, backlog, and smoothness matter more than raw coverage percentage.
+
+Important interpretation change:
+
+- `coverage_rate` is still logged, but it is no longer the primary success metric.
+- Primary metrics should be:
+  - average cover latency
+  - p90/p95/max cover latency
+  - `response_sla_success_rate`
+  - `covered_per_second` / `per_point_cover_speed`
+  - `active_steam_mean` and `oldest_active_age_max`
+  - `action_delta_mean` / `action_l2_mean` for smoothness
+- For held-out checkpoint selection, use latency-first ranking before making hard/extreme claims.
+
+v11 design:
+
+- `thermal_lstm_spawnhist_latency_v11`
+- LSTM-PPO core remains unchanged.
+- `horizon2` remains the residual planner base; no `horizon3`.
+- 4 episode windows form one continuous physical session:
+  - `continuous_session_chunks=4`
+  - `carry_lstm_state_across_chunks=True`
+  - `lstm_sequence_chunks=4`
+- Environment state, active steam points, thermal hotspots, and material state continue across those chunks.
+- LSTM hidden state is carried across chunks unless a true new session starts.
+- PPO recurrent sequence length becomes `episode_steps * lstm_sequence_chunks`, so the update sees longer temporal structure than a single 800-step chunk.
+- Reward is latency-first:
+  - lower cover-reward dominance
+  - stronger quick-cover bonus
+  - explicit cover-latency penalty
+  - SLA bonus/miss penalty
+  - oldest-active-steam and backlog penalties
+  - action smoothing penalty is kept enabled
+
+Implemented in:
+
+- `coverage_schemes/scheme_d_paper_base/env.py`
+  - response latency percentiles and SLA metrics
+  - active backlog and oldest active steam metrics
+  - `start_new_chunk()` for continuous sessions without physical reset
+  - optional latency-first reward terms
+- `coverage_schemes/scheme_d_paper_base/train.py`
+  - CLI flags for latency reward and continuous chunks
+  - LSTM hidden carry across chunks
+  - longer PPO recurrent sequence support
+  - episode CSV logs response/SLA/backlog/session fields
+- `coverage_schemes/scheme_d_paper_base/eval.py`
+  - latency/SLA/backlog metrics in evaluation CSV and summary
+- `coverage_schemes/scheme_d_paper_base/run_matrix.py`
+  - summary includes p90 latency and SLA metrics
+- `coverage_schemes/scheme_d_paper_base/checkpoint_sweep.py`
+  - `--rank-objective latency` ranks by SLA, p90 latency, speed, misses, then coverage
+- `coverage_schemes/scheme_d_paper_base/run_training_suite.py`
+  - preset `thermal_lstm_spawnhist_latency_v11`
+- `scripts/train_memory_v11_latency_seeds01.sh`
+- `scripts/eval_v11_latency_quick.sh`
+
+Old v10 candidate remains useful context:
 
 Core idea:
 
@@ -74,7 +131,7 @@ Core idea:
 - dense / burst phases: use `dynamic_weighted` base, shrink residual freedom so PPO does not damage strong visible-target routing
 - mid phases: fall back to configured base, normally `horizon2`
 
-Implemented in:
+Implemented in v10:
 
 - `coverage_schemes/scheme_d_paper_base/policies.py`
   - `residual_glue_mode`
@@ -120,6 +177,38 @@ origin/main
 
 ## Commands
 
+Train v11 two seeds:
+
+```bash
+cd /Data2/jj/rl_robot
+scripts/train_memory_v11_latency_seeds01.sh
+```
+
+Quick long-window eval v11:
+
+```bash
+cd /Data2/jj/rl_robot
+scripts/eval_v11_latency_quick.sh \
+  runs/scheme_d_paper_suite/thermal_lstm_spawnhist_latency_v11_seed0/checkpoints/scheme_d_paper_base_latest_full.pt \
+  runs/matrix/thermal_lstm_spawnhist_latency_v11_quick
+```
+
+Latency-first checkpoint sweep:
+
+```bash
+cd /Data2/jj/rl_robot
+scripts/eval_checkpoint_sweep.sh \
+  runs/scheme_d_paper_suite/thermal_lstm_spawnhist_latency_v11_seed0 \
+  --checkpoint-tags 500,700,900,1100,latest \
+  --stages multi_hard,multi_extreme \
+  --seeds 100,101,102 \
+  --episodes 3 \
+  --steps 3200 \
+  --demo-mode \
+  --rank-objective latency \
+  --device cpu
+```
+
 Train v10 two seeds:
 
 ```bash
@@ -158,7 +247,7 @@ When asked to inspect a run:
 1. Read `config.json`, `episodes.csv`, and `events.jsonl`.
 2. Separate training last50 from held-out eval.
 3. Compare against at least `horizon2` and `dynamic_weighted` under the same checkpoint config.
-4. Report coverage first, then reward and latency.
+4. For v11 and later, report latency/SLA/speed first, then coverage and reward.
 5. Do not default to `latest_full.pt`; use checkpoint sweep for hard/extreme claims.
 
 Helpful parsing targets:
