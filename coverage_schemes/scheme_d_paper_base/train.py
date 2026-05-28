@@ -15,7 +15,9 @@ from .env import ShangZengEnv
 from .policies import (
     action_toward_steam,
     build_base_policy,
+    build_residual_base_policy,
     combine_residual_action,
+    residual_beta_for_env,
     shield_residual_action,
     select_distance_age_steam,
     select_nearest_steam,
@@ -34,6 +36,7 @@ BC_POLICY_CHOICES = (
     "aco_tsp",
     "planner_ensemble",
 )
+RESIDUAL_GLUE_CHOICES = ("fixed", "phase_aware")
 TARGET_SELECTOR_CHOICES = ("nearest", "risk_aware")
 STAGE_CHOICES = ("single_easy", "single_precision", "multi_low", "multi_realistic", "multi_hard", "multi_extreme")
 
@@ -236,6 +239,13 @@ def build_arg_parser():
     parser.add_argument("--flat-stage", choices=STAGE_CHOICES, help="Stage used by --no-curriculum.")
     parser.add_argument("--no-potential-shaping", action="store_true", help="Disable distance-potential reward shaping.")
     parser.add_argument("--no-best-progress", action="store_true", help="Disable per-steam best-progress reward.")
+    parser.add_argument("--cover-reward-scale", type=float, help="Multiplier for the per-steam cover reward after curriculum setup.")
+    parser.add_argument("--quick-cover-bonus-scale", type=float, help="Multiplier for the quick-cover latency bonus.")
+    parser.add_argument("--precision-bonus-scale", type=float, help="Multiplier for the within-radius precision bonus.")
+    parser.add_argument("--potential-gain-scale", type=float, help="Multiplier for distance-potential shaping after curriculum setup.")
+    parser.add_argument("--best-progress-gain-scale", type=float, help="Multiplier for per-steam best-progress shaping.")
+    parser.add_argument("--active-steam-penalty-scale", type=float, help="Multiplier for active-steam count penalty.")
+    parser.add_argument("--age-penalty-scale", type=float, help="Multiplier for active-steam age penalty.")
     parser.add_argument("--no-material-observation", action="store_true", help="Zero material and material-risk observation features.")
     parser.add_argument("--no-action-smoothing-penalty", action="store_true", help="Disable action delta/L2 reward penalty.")
     parser.add_argument("--action-delay-steps", type=int, help="Apply an N-step command delay during training.")
@@ -253,6 +263,14 @@ def build_arg_parser():
     parser.add_argument("--thermal-recent-spawn-radius", type=float, help="Radius used to suppress repeated spawns at the same location.")
     parser.add_argument("--thermal-recent-spawn-suppression", type=float, help="Strength of recent-spawn suppression.")
     parser.add_argument("--thermal-recent-spawn-memory", type=int, help="Number of recent spawn locations used for suppression.")
+    parser.add_argument("--burst-lull-spawn", action="store_true", help="Use thermal burst/lull spawn cycles instead of immediate force-spawn.")
+    parser.add_argument("--burst-lull-lull-steps", type=int, help="No-new-burst lull length after coverage events.")
+    parser.add_argument("--burst-lull-charge-steps", type=int, help="Accumulation steps required before the next thermal burst.")
+    parser.add_argument("--burst-lull-sparse-threshold", type=int, help="Active-steam count at or below which a charged burst may fire.")
+    parser.add_argument("--burst-lull-burst-min", type=int, help="Minimum steam points spawned in a thermal burst.")
+    parser.add_argument("--burst-lull-burst-max", type=int, help="Maximum steam points spawned in a thermal burst.")
+    parser.add_argument("--burst-lull-burst-interval-steps", type=int, help="Step gap between individual steam spawns inside one burst.")
+    parser.add_argument("--burst-lull-trickle-probability", type=float, help="Small sparse-spawn probability during lull after partial charge.")
     parser.add_argument("--residual-policy", action="store_true", help="Train the actor as a residual around a rule/planner base controller.")
     parser.add_argument("--residual-base-policy", choices=BC_POLICY_CHOICES, help="Base controller for residual PPO.")
     parser.add_argument("--residual-beta", type=float, help="Scale applied to the learned residual action.")
@@ -261,6 +279,16 @@ def build_arg_parser():
     parser.add_argument("--residual-beta-warmup-steps", type=int, help="Steps over which residual beta increases from start to end.")
     parser.add_argument("--no-residual-guard", action="store_true", help="Disable residual direction guard.")
     parser.add_argument("--residual-action-shield", action="store_true", help="Keep residual actions from undoing planner progress.")
+    parser.add_argument("--residual-glue", choices=RESIDUAL_GLUE_CHOICES, help="How planner and LSTM residual actions are combined.")
+    parser.add_argument("--residual-sparse-base-policy", choices=BC_POLICY_CHOICES, help="Base controller used in sparse/lull phases.")
+    parser.add_argument("--residual-dense-base-policy", choices=BC_POLICY_CHOICES, help="Base controller used in dense/burst phases.")
+    parser.add_argument("--residual-phase-sparse-threshold", type=int, help="Active-steam count treated as sparse for phase-aware residual glue.")
+    parser.add_argument("--residual-phase-dense-threshold", type=int, help="Active-steam count treated as dense for phase-aware residual glue.")
+    parser.add_argument("--residual-sparse-beta-scale", type=float, help="Residual beta multiplier for sparse visible-target phases.")
+    parser.add_argument("--residual-lull-beta-scale", type=float, help="Residual beta multiplier during explicit burst/lull quiet phases.")
+    parser.add_argument("--residual-charging-beta-scale", type=float, help="Residual beta multiplier while spawn charge accumulates.")
+    parser.add_argument("--residual-dense-beta-scale", type=float, help="Residual beta multiplier when many targets are active.")
+    parser.add_argument("--residual-burst-beta-scale", type=float, help="Residual beta multiplier while a sequential burst is being emitted.")
     parser.add_argument("--stagnation-recovery-steps", type=int, help="Steps without coverage before the shield becomes stricter.")
     parser.add_argument("--keep-lstm-state-on-cover", action="store_true", help="Do not reset recurrent state when a steam is covered.")
     parser.add_argument("--keep-lstm-state-on-miss", action="store_true", help="Do not reset recurrent state when a steam is missed.")
@@ -315,13 +343,37 @@ def apply_cli_overrides(config, args):
         "thermal_recent_spawn_radius",
         "thermal_recent_spawn_suppression",
         "thermal_recent_spawn_memory",
+        "burst_lull_lull_steps",
+        "burst_lull_charge_steps",
+        "burst_lull_sparse_threshold",
+        "burst_lull_burst_min",
+        "burst_lull_burst_max",
+        "burst_lull_burst_interval_steps",
+        "burst_lull_trickle_probability",
         "attention_steam_count",
         "residual_base_policy",
+        "residual_glue",
+        "residual_sparse_base_policy",
+        "residual_dense_base_policy",
+        "residual_phase_sparse_threshold",
+        "residual_phase_dense_threshold",
+        "residual_sparse_beta_scale",
+        "residual_lull_beta_scale",
+        "residual_charging_beta_scale",
+        "residual_dense_beta_scale",
+        "residual_burst_beta_scale",
         "residual_beta",
         "residual_beta_start",
         "residual_beta_end",
         "residual_beta_warmup_steps",
         "stagnation_recovery_steps",
+        "cover_reward_scale",
+        "quick_cover_bonus_scale",
+        "precision_bonus_scale",
+        "potential_gain_scale",
+        "best_progress_gain_scale",
+        "active_steam_penalty_scale",
+        "age_penalty_scale",
         "device",
     ):
         value = getattr(args, key)
@@ -369,6 +421,8 @@ def apply_cli_overrides(config, args):
         config["domain_randomization"] = True
     if args.no_thermal_spawn:
         config["thermal_spawn"] = False
+    if args.burst_lull_spawn:
+        config["burst_lull_spawn"] = True
     if args.residual_policy:
         config["residual_policy"] = True
     if args.no_residual_guard:
@@ -411,6 +465,13 @@ def configure_env_from_config(env, config):
     env.set_target_selector(config.get("target_selector", "risk_aware"))
     env.potential_shaping_enabled = bool(config.get("potential_shaping", True))
     env.best_progress_enabled = bool(config.get("best_progress_reward", True))
+    env.cover_reward_scale = float(config.get("cover_reward_scale", env.cover_reward_scale))
+    env.quick_cover_bonus_scale = float(config.get("quick_cover_bonus_scale", env.quick_cover_bonus_scale))
+    env.precision_bonus_scale = float(config.get("precision_bonus_scale", env.precision_bonus_scale))
+    env.potential_gain_scale = float(config.get("potential_gain_scale", env.potential_gain_scale))
+    env.best_progress_gain_scale = float(config.get("best_progress_gain_scale", env.best_progress_gain_scale))
+    env.active_steam_penalty_scale = float(config.get("active_steam_penalty_scale", env.active_steam_penalty_scale))
+    env.age_penalty_scale = float(config.get("age_penalty_scale", env.age_penalty_scale))
     env.material_observation_enabled = bool(config.get("material_observation", True))
     env.material_tv_reward_enabled = bool(config.get("material_tv_reward", False))
     env.material_tv_reward_gain = float(config.get("material_tv_reward_gain", env.material_tv_reward_gain))
@@ -432,6 +493,21 @@ def configure_env_from_config(env, config):
         config.get("thermal_recent_spawn_suppression", env.thermal_recent_spawn_suppression)
     )
     env.thermal_recent_spawn_memory = int(config.get("thermal_recent_spawn_memory", env.thermal_recent_spawn_memory))
+    env.burst_lull_spawn_enabled = bool(config.get("burst_lull_spawn", False))
+    env.burst_lull_lull_steps = int(config.get("burst_lull_lull_steps", env.burst_lull_lull_steps))
+    env.burst_lull_charge_steps = int(config.get("burst_lull_charge_steps", env.burst_lull_charge_steps))
+    env.burst_lull_sparse_threshold = int(
+        config.get("burst_lull_sparse_threshold", env.burst_lull_sparse_threshold)
+    )
+    env.burst_lull_burst_min = int(config.get("burst_lull_burst_min", env.burst_lull_burst_min))
+    env.burst_lull_burst_max = int(config.get("burst_lull_burst_max", env.burst_lull_burst_max))
+    env.burst_lull_burst_interval_steps = int(
+        config.get("burst_lull_burst_interval_steps", env.burst_lull_burst_interval_steps)
+    )
+    env.burst_lull_trickle_probability = float(
+        config.get("burst_lull_trickle_probability", env.burst_lull_trickle_probability)
+    )
+    env.burst_lull_initial_burst = bool(config.get("burst_lull_initial_burst", env.burst_lull_initial_burst))
     env.spawn_history_observation_enabled = bool(
         config.get("use_spawn_history_observation", env.spawn_history_observation_enabled)
     )
@@ -640,6 +716,9 @@ def train(config, run_path):
                 f"Cover reward: {env.cover_reward}\n"
                 f"Time penalty: {env.time_penalty}\n"
                 f"Potential gain: {env.potential_gain}\n"
+                f"Reward scales: cover={env.cover_reward_scale}, quick={env.quick_cover_bonus_scale}, "
+                f"precision={env.precision_bonus_scale}, potential={env.potential_gain_scale}, "
+                f"best_progress={env.best_progress_gain_scale}\n"
                 f"Target selector: {env.target_selector}\n"
                 f"LSTM: {agent.use_lstm}\n"
                 f"Steam attention: {agent.use_steam_attention}\n"
@@ -653,6 +732,15 @@ def train(config, run_path):
                 f"Material TV reward: {env.material_tv_reward_enabled}\n"
                 f"Residual policy: {config.get('residual_policy', False)}\n"
                 f"Residual base: {config.get('residual_base_policy', 'risk_aware')}\n"
+                f"Residual glue: {config.get('residual_glue', 'fixed')} "
+                f"(sparse={config.get('residual_sparse_base_policy', 'horizon2')}, "
+                f"dense={config.get('residual_dense_base_policy', 'dynamic_weighted')}, "
+                f"beta scales sparse/lull/charging/dense/burst="
+                f"{config.get('residual_sparse_beta_scale', 1.0)}/"
+                f"{config.get('residual_lull_beta_scale', 1.0)}/"
+                f"{config.get('residual_charging_beta_scale', 1.0)}/"
+                f"{config.get('residual_dense_beta_scale', 1.0)}/"
+                f"{config.get('residual_burst_beta_scale', 1.0)})\n"
                 f"Residual shield: {config.get('residual_action_shield', False)} "
                 f"(recovery={config.get('stagnation_recovery_steps', 180)})\n"
                 f"Residual beta: {config.get('residual_beta', 0.25)} "
@@ -663,13 +751,18 @@ def train(config, run_path):
                 f"Thermal spawn: {env.thermal_spawn_enabled} "
                 f"(hotspots={env.thermal_hotspot_count}, bg={env.thermal_background_weight}, "
                 f"strength={env.thermal_hotspot_strength})\n"
+                f"Burst-lull spawn: {env.burst_lull_spawn_enabled} "
+                f"(lull={env.burst_lull_lull_steps}, charge={env.burst_lull_charge_steps}, "
+                f"threshold={env.burst_lull_sparse_threshold}, "
+                f"burst={env.burst_lull_burst_min}-{env.burst_lull_burst_max}, "
+                f"interval={env.burst_lull_burst_interval_steps})\n"
                 f"{'='*50}",
                 flush=True,
             )
 
             stage_rewards = []
             stage_coverages = []
-            residual_base_controller = build_base_policy(config.get("residual_base_policy", "risk_aware"))
+            residual_base_controller = build_residual_base_policy(config)
             bc_controller = build_base_policy(config.get("bc_policy", "risk_aware"))
 
             for ep_in_stage in range(stage["episodes"]):
@@ -685,6 +778,9 @@ def train(config, run_path):
                 ep_cover_keeps = 0
                 ep_miss_resets = 0
                 ep_spawn_events = 0
+                ep_residual_modes = defaultdict(int)
+                ep_residual_base_counts = defaultdict(int)
+                ep_residual_betas = []
                 pred_supervised_indices = set()
                 hx, cx = None, None
                 previous_missed = info.get("missed_count", 0)
@@ -698,9 +794,20 @@ def train(config, run_path):
                         ep_hidden_resets += 1
                     bc_action = bc_controller.act(env, s)
                     raw_a, lp, v, pred_xy, hx_n, cx_n = agent.select_action(s, hx, cx)
-                    current_residual_beta = residual_beta_at_step(config, total_steps)
+                    scheduled_residual_beta = residual_beta_at_step(config, total_steps)
+                    current_residual_beta = scheduled_residual_beta
                     if config.get("residual_policy", False):
                         base_action = residual_base_controller.act(env, s)
+                        current_residual_beta = residual_beta_for_env(config, env, scheduled_residual_beta)
+                        ep_residual_modes[getattr(residual_base_controller, "last_mode", "fixed")] += 1
+                        ep_residual_base_counts[
+                            getattr(
+                                residual_base_controller,
+                                "last_policy_name",
+                                config.get("residual_base_policy", "risk_aware"),
+                            )
+                        ] += 1
+                        ep_residual_betas.append(float(current_residual_beta))
                         a = combine_residual_action(
                             base_action,
                             raw_a,
@@ -837,7 +944,20 @@ def train(config, run_path):
                     "device": str(agent.device),
                     "residual_policy": bool(config.get("residual_policy", False)),
                     "residual_base_policy": str(config.get("residual_base_policy", "")),
+                    "residual_glue": str(config.get("residual_glue", "fixed")),
+                    "residual_sparse_base_policy": str(config.get("residual_sparse_base_policy", "")),
+                    "residual_dense_base_policy": str(config.get("residual_dense_base_policy", "")),
                     "residual_beta": float(residual_beta_at_step(config, total_steps)),
+                    "residual_effective_beta_mean": float(np.mean(ep_residual_betas)) if ep_residual_betas else 0.0,
+                    "residual_fixed_steps": int(ep_residual_modes.get("fixed", 0)),
+                    "residual_lull_steps": int(ep_residual_modes.get("lull", 0)),
+                    "residual_sparse_steps": int(ep_residual_modes.get("sparse", 0)),
+                    "residual_charging_steps": int(ep_residual_modes.get("charging", 0)),
+                    "residual_dense_steps": int(ep_residual_modes.get("dense", 0)),
+                    "residual_burst_steps": int(ep_residual_modes.get("burst", 0)),
+                    "residual_mid_steps": int(ep_residual_modes.get("mid", 0)),
+                    "residual_horizon2_base_steps": int(ep_residual_base_counts.get("horizon2", 0)),
+                    "residual_dynamic_base_steps": int(ep_residual_base_counts.get("dynamic_weighted", 0)),
                     "residual_guard": bool(config.get("residual_guard", True)),
                     "residual_action_shield": bool(config.get("residual_action_shield", False)),
                     "stagnation_recovery_steps": int(config.get("stagnation_recovery_steps", 180)),
@@ -870,6 +990,15 @@ def train(config, run_path):
                     "action_noise_std": float(info.get("action_noise_std", 0.0)),
                     "domain_randomization_enabled": bool(info.get("domain_randomization_enabled", False)),
                     "spawn_burst_probability": float(info.get("spawn_burst_probability", 0.0)),
+                    "burst_lull_spawn_enabled": bool(info.get("burst_lull_spawn_enabled", False)),
+                    "burst_lull_phase": str(info.get("burst_lull_phase", "")),
+                    "burst_lull_lull_remaining": int(info.get("burst_lull_lull_remaining", 0)),
+                    "burst_lull_charge": int(info.get("burst_lull_charge", 0)),
+                    "burst_lull_charge_score": float(info.get("burst_lull_charge_score", 0.0)),
+                    "burst_lull_pending_count": int(info.get("burst_lull_pending_count", 0)),
+                    "burst_lull_next_spawn_delay": int(info.get("burst_lull_next_spawn_delay", 0)),
+                    "burst_lull_burst_interval_steps": int(info.get("burst_lull_burst_interval_steps", 0)),
+                    "last_burst_spawn_count": int(info.get("last_burst_spawn_count", 0)),
                     "thermal_spawn_enabled": bool(info.get("thermal_spawn_enabled", False)),
                     "thermal_hotspot_count": int(info.get("thermal_hotspot_count", 0)),
                     "thermal_background_weight": float(info.get("thermal_background_weight", 0.0)),

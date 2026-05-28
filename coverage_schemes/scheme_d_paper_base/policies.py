@@ -246,6 +246,92 @@ class PlannerEnsemblePolicy:
         return action_toward_steam(env, best_steam)
 
 
+def residual_glue_mode(env, config):
+    if str(config.get("residual_glue", "fixed")) != "phase_aware":
+        return "fixed"
+
+    active_count = len(getattr(env, "steams", []) or [])
+    max_steams = max(int(getattr(env, "max_steams", max(active_count, 1))), 1)
+    sparse_threshold = config.get("residual_phase_sparse_threshold")
+    if sparse_threshold is None:
+        sparse_threshold = getattr(env, "burst_lull_sparse_threshold", config.get("burst_lull_sparse_threshold", 2))
+    sparse_threshold = max(int(sparse_threshold), 0)
+
+    dense_threshold = config.get("residual_phase_dense_threshold")
+    if dense_threshold is None:
+        dense_threshold = max(sparse_threshold + 2, int(np.ceil(0.55 * max_steams)))
+    dense_threshold = max(int(dense_threshold), sparse_threshold + 1)
+
+    phase = str(getattr(env, "burst_lull_phase", "") or "")
+    pending_count = int(getattr(env, "burst_lull_pending_count", 0) or 0)
+
+    if phase == "burst" or pending_count > 0:
+        return "burst"
+    if phase == "dense" or active_count >= dense_threshold:
+        return "dense"
+    if phase == "lull":
+        return "lull"
+    if active_count <= sparse_threshold:
+        return "sparse"
+    if phase == "charging":
+        return "charging"
+    return "mid"
+
+
+def residual_beta_for_env(config, env, scheduled_beta):
+    if str(config.get("residual_glue", "fixed")) != "phase_aware":
+        return float(scheduled_beta)
+    mode = residual_glue_mode(env, config)
+    scale_by_mode = {
+        "lull": float(config.get("residual_lull_beta_scale", 1.35)),
+        "sparse": float(config.get("residual_sparse_beta_scale", 1.25)),
+        "charging": float(config.get("residual_charging_beta_scale", 1.0)),
+        "dense": float(config.get("residual_dense_beta_scale", 0.35)),
+        "burst": float(config.get("residual_burst_beta_scale", 0.25)),
+        "mid": 1.0,
+        "fixed": 1.0,
+    }
+    return float(np.clip(float(scheduled_beta) * scale_by_mode.get(mode, 1.0), 0.0, 1.0))
+
+
+class PhaseAwareResidualBasePolicy:
+    def __init__(self, config):
+        self.config = dict(config)
+        self.sparse_policy_name = self.config.get("residual_sparse_base_policy") or self.config.get(
+            "residual_base_policy", "horizon2"
+        )
+        self.dense_policy_name = self.config.get("residual_dense_base_policy") or self.config.get(
+            "residual_base_policy", "horizon2"
+        )
+        self.mid_policy_name = self.config.get("residual_base_policy", "horizon2")
+        self.controllers = {}
+        for name in {self.sparse_policy_name, self.dense_policy_name, self.mid_policy_name}:
+            self.controllers[name] = build_base_policy(name)
+        self.last_mode = "fixed"
+        self.last_policy_name = self.mid_policy_name
+        self.name = f"phase_aware_{self.sparse_policy_name}_{self.dense_policy_name}"
+
+    def reset(self):
+        self.last_mode = "fixed"
+        self.last_policy_name = self.mid_policy_name
+        for controller in self.controllers.values():
+            controller.reset()
+
+    def _policy_name_for_mode(self, mode):
+        if mode in ("lull", "sparse", "charging"):
+            return self.sparse_policy_name
+        if mode in ("burst", "dense"):
+            return self.dense_policy_name
+        return self.mid_policy_name
+
+    def act(self, env, obs):
+        mode = residual_glue_mode(env, self.config)
+        policy_name = self._policy_name_for_mode(mode)
+        self.last_mode = mode
+        self.last_policy_name = policy_name
+        return self.controllers[policy_name].act(env, obs)
+
+
 class PPOPolicy:
     name = "ppo"
 
@@ -253,6 +339,7 @@ class PPOPolicy:
         config = checkpoint_config(model_path)
         if config_override:
             config = {**config, **{key: value for key, value in config_override.items() if value is not None}}
+        self.config = config
         self.agent = PPOAgent(
             env.observation_space.shape[0],
             env.action_space.shape[0],
@@ -283,10 +370,14 @@ class PPOPolicy:
         self.recurrent_reset_on_cover = bool(config.get("recurrent_reset_on_cover", True))
         self.recurrent_reset_on_miss = bool(config.get("recurrent_reset_on_miss", True))
         self.residual_base_policy_name = config.get("residual_base_policy", "risk_aware")
-        self.residual_base_policy = build_base_policy(self.residual_base_policy_name) if self.residual_policy else None
+        self.residual_base_policy = build_residual_base_policy(config) if self.residual_policy else None
         self.previous_env_action = None
         if self.residual_policy:
-            self.name = f"residual_{self.residual_base_policy_name}_ppo"
+            glue = str(config.get("residual_glue", "fixed"))
+            if glue == "phase_aware":
+                self.name = "phase_aware_residual_ppo"
+            else:
+                self.name = f"residual_{self.residual_base_policy_name}_ppo"
 
     def reset(self):
         self.hx = None
@@ -312,7 +403,7 @@ class PPOPolicy:
             action = combine_residual_action(
                 base_action,
                 action,
-                beta=self.residual_beta,
+                beta=residual_beta_for_env(self.config, env, self.residual_beta),
                 guard=self.residual_guard,
             )
             if self.residual_action_shield:
@@ -350,6 +441,12 @@ def build_base_policy(kind):
     if kind == "planner_ensemble":
         return PlannerEnsemblePolicy()
     raise ValueError(f"Unknown base policy: {kind}")
+
+
+def build_residual_base_policy(config):
+    if str(config.get("residual_glue", "fixed")) == "phase_aware":
+        return PhaseAwareResidualBasePolicy(config)
+    return build_base_policy(config.get("residual_base_policy", "risk_aware"))
 
 
 def combine_residual_action(base_action, residual_action, beta=0.25, guard=True, min_alignment=0.15):
@@ -493,22 +590,32 @@ def select_risk_aware_steam(env):
         age_score = np.clip(steam["age"] / max(env.max_steam_age, 1), 0.0, 1.0)
 
         cell_xy = steam["pos"][:2]
-        grid_dist = np.linalg.norm(env.grid_world_xy - cell_xy, axis=-1)
-        local_gap = float(np.mean(np.maximum(env.target_layer_height - env.material_height, 0.0) * np.exp(-grid_dist ** 2 / (2.0 * env.deposit_sigma ** 2))))
-        material_score = np.clip(local_gap / max(env.target_layer_height, 1e-6), 0.0, 1.0)
+        material_score = 0.0
+        if material_scoring_enabled(env):
+            grid_dist = np.linalg.norm(env.grid_world_xy - cell_xy, axis=-1)
+            local_gap = float(np.mean(np.maximum(env.target_layer_height - env.material_height, 0.0) * np.exp(-grid_dist ** 2 / (2.0 * env.deposit_sigma ** 2))))
+            material_score = np.clip(local_gap / max(env.target_layer_height, 1e-6), 0.0, 1.0)
 
         reach_offset = np.linalg.norm(cell_xy - env.home_ee_pos[:2]) if env.home_ee_pos is not None else 0.0
         reach_score = 1.0 - np.clip(reach_offset / max(env.max_target_offset, 1e-6), 0.0, 1.0)
 
         thermal_score = thermal_score_at_xy(env, cell_xy)
 
-        score = (
-            0.35 * age_score
-            + 0.25 * dist_score
-            + 0.15 * material_score
-            + 0.10 * reach_score
-            + 0.15 * thermal_score
-        )
+        if material_scoring_enabled(env):
+            score = (
+                0.35 * age_score
+                + 0.25 * dist_score
+                + 0.15 * material_score
+                + 0.10 * reach_score
+                + 0.15 * thermal_score
+            )
+        else:
+            score = (
+                0.40 * age_score
+                + 0.30 * dist_score
+                + 0.10 * reach_score
+                + 0.20 * thermal_score
+            )
         if score > best_score:
             best_score = score
             best_steam = steam
@@ -525,19 +632,32 @@ def thermal_score_at_xy(env, xy):
         return 0.0
 
 
+def material_scoring_enabled(env):
+    return bool(getattr(env, "material_observation_enabled", True))
+
+
 def select_dynamic_weighted_steam(env):
     if not env.steams:
         return None
     density = np.clip(len(env.steams) / max(env.max_steams, 1), 0.0, 1.0)
-    material_pressure = np.clip(env.material_quality_loss, 0.0, 1.5) / 1.5
     spawn_pressure = float(np.clip(env.spawn_probability * max(env.spawn_cooldown_steps, 1), 0.0, 1.0))
-    weights = {
-        "age": 0.28 + 0.16 * density,
-        "distance": 0.34 - 0.10 * density,
-        "material": 0.16 + 0.14 * material_pressure,
-        "reachability": 0.10 - 0.04 * material_pressure,
-        "thermal": 0.12 + 0.10 * max(density, spawn_pressure),
-    }
+    if material_scoring_enabled(env):
+        material_pressure = np.clip(env.material_quality_loss, 0.0, 1.5) / 1.5
+        weights = {
+            "age": 0.28 + 0.16 * density,
+            "distance": 0.34 - 0.10 * density,
+            "material": 0.16 + 0.14 * material_pressure,
+            "reachability": 0.10 - 0.04 * material_pressure,
+            "thermal": 0.12 + 0.10 * max(density, spawn_pressure),
+        }
+    else:
+        weights = {
+            "age": 0.34 + 0.16 * density,
+            "distance": 0.38 - 0.08 * density,
+            "material": 0.0,
+            "reachability": 0.10,
+            "thermal": 0.18 + 0.08 * max(density, spawn_pressure),
+        }
     return max(env.steams, key=lambda steam: score_steam(env, steam, env.cover_center, weights))
 
 
@@ -558,13 +678,25 @@ def score_steam(env, steam, center_xy=None, weights=None):
         material_score = 0.0
         reachability_score = 1.0
         thermal_score = thermal_score_at_xy(env, steam["pos"][:2])
-    weights = weights or {
-        "age": 0.35,
-        "distance": 0.25,
-        "material": 0.15,
-        "reachability": 0.10,
-        "thermal": 0.15,
-    }
+    if not material_scoring_enabled(env):
+        material_score = 0.0
+    weights = weights or (
+        {
+            "age": 0.35,
+            "distance": 0.25,
+            "material": 0.15,
+            "reachability": 0.10,
+            "thermal": 0.15,
+        }
+        if material_scoring_enabled(env)
+        else {
+            "age": 0.40,
+            "distance": 0.30,
+            "material": 0.0,
+            "reachability": 0.10,
+            "thermal": 0.20,
+        }
+    )
     return float(
         weights.get("age", 0.0) * age_score
         + weights.get("distance", 0.0) * distance_score

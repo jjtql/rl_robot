@@ -97,6 +97,15 @@ class ShangZengEnv(gym.Env):
         self.thermal_recent_spawn_radius = 0.18
         self.thermal_recent_spawn_suppression = 0.55
         self.thermal_recent_spawn_memory = 12
+        self.burst_lull_spawn_enabled = False
+        self.burst_lull_lull_steps = 80
+        self.burst_lull_charge_steps = 120
+        self.burst_lull_sparse_threshold = 2
+        self.burst_lull_burst_min = 3
+        self.burst_lull_burst_max = 5
+        self.burst_lull_burst_interval_steps = 4
+        self.burst_lull_trickle_probability = 0.004
+        self.burst_lull_initial_burst = True
         self.target_selector = "risk_aware"
         self.set_target_selector(target_selector)
         self.base_obs_dim = 35
@@ -154,6 +163,13 @@ class ShangZengEnv(gym.Env):
         self.action_l2_penalty_gain = 0.004
         self.potential_shaping_enabled = True
         self.best_progress_enabled = True
+        self.cover_reward_scale = 1.0
+        self.quick_cover_bonus_scale = 1.0
+        self.precision_bonus_scale = 1.0
+        self.potential_gain_scale = 1.0
+        self.best_progress_gain_scale = 1.0
+        self.active_steam_penalty_scale = 1.0
+        self.age_penalty_scale = 1.0
         self.material_observation_enabled = True
         self.action_penalty_enabled = True
         self.material_tv_reward_enabled = False
@@ -182,6 +198,12 @@ class ShangZengEnv(gym.Env):
         self.steam_history = deque(maxlen=16)
         self.thermal_hotspots = []
         self.recent_spawn_positions = deque(maxlen=self.thermal_recent_spawn_memory)
+        self.burst_lull_lull_remaining = 0
+        self.burst_lull_charge = 0
+        self.burst_lull_phase = "off"
+        self.burst_lull_pending_count = 0
+        self.burst_lull_next_spawn_delay = 0
+        self.last_burst_spawn_count = 0
         self.last_spawn_xy = None
         self.spawned_this_step_positions = []
         self.last_steam_center = None
@@ -229,6 +251,10 @@ class ShangZengEnv(gym.Env):
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32)
 
     def configure_curriculum(self, stage):
+        self.active_steam_penalty = 0.01
+        self.age_penalty_gain = 0.04
+        self.precision_bonus = 12.0
+        self.best_progress_gain = 0.75
         if stage == "single_easy":
             self.max_steams = 1
             self.max_steam_age = 360
@@ -333,8 +359,18 @@ class ShangZengEnv(gym.Env):
 
         else:
             raise ValueError(f"Unknown curriculum stage: {stage}")
+        self._apply_reward_scales()
         self.curriculum_stage = stage
         self._save_stage_nominal_params()
+
+    def _apply_reward_scales(self):
+        self.cover_reward *= float(self.cover_reward_scale)
+        self.quick_cover_bonus *= float(self.quick_cover_bonus_scale)
+        self.precision_bonus *= float(self.precision_bonus_scale)
+        self.potential_gain *= float(self.potential_gain_scale)
+        self.best_progress_gain *= float(self.best_progress_gain_scale)
+        self.active_steam_penalty *= float(self.active_steam_penalty_scale)
+        self.age_penalty_gain *= float(self.age_penalty_scale)
 
     def _save_stage_nominal_params(self):
         self._stage_nominal_params = {
@@ -397,6 +433,12 @@ class ShangZengEnv(gym.Env):
         self.step_count = 0
         self.steps_since_spawn = self.spawn_cooldown_steps
         self.steps_since_cover = 0
+        self.burst_lull_lull_remaining = 0
+        self.burst_lull_charge = 0
+        self.burst_lull_phase = "charging" if self.burst_lull_spawn_enabled else "off"
+        self.burst_lull_pending_count = 0
+        self.burst_lull_next_spawn_delay = 0
+        self.last_burst_spawn_count = 0
         self.spawned_count = 0
         self.covered_count = 0
         self.missed_count = 0
@@ -445,8 +487,18 @@ class ShangZengEnv(gym.Env):
         self._apply_domain_randomization()
         self._initialize_thermal_hotspots()
 
-        for _ in range(self.initial_spawn_count):
-            self._spawn_steam_from_material()
+        initial_spawn_count = int(self.initial_spawn_count)
+        if self.burst_lull_spawn_enabled and self.burst_lull_initial_burst:
+            initial_spawn_count = max(initial_spawn_count, int(self.burst_lull_burst_min))
+            initial_spawn_count = min(initial_spawn_count, int(self.max_steams))
+            spawned = self._spawn_steam_batch(1 if initial_spawn_count > 0 else 0)
+            self.burst_lull_pending_count = max(initial_spawn_count - spawned, 0)
+            self.burst_lull_next_spawn_delay = int(self.burst_lull_burst_interval_steps)
+        else:
+            self._spawn_steam_batch(min(initial_spawn_count, int(self.max_steams)))
+        if self.burst_lull_spawn_enabled:
+            self.burst_lull_charge = 0
+            self.burst_lull_phase = "burst"
         self.spawned_this_step_positions = []
         self._update_steam_trend()
         self._sync_steam_sites()
@@ -512,24 +564,26 @@ class ShangZengEnv(gym.Env):
         )
         if covered:
             self.steps_since_cover = 0
+            self._enter_burst_lull_lull()
 
         terminated = self.covered_count >= self.target_success_count and self.coverage_rate >= self.target_coverage
 
         # Spawn new steam
-        should_force_spawn = len(self.steams) == 0
-        should_random_spawn = (
-            len(self.steams) < self.max_steams
-            and self.steps_since_spawn >= self.spawn_cooldown_steps
-            and self.rng.random() < self.spawn_probability
-        )
-        if not terminated and (should_force_spawn or should_random_spawn):
-            spawn_count = 1
-            if should_random_spawn and self.rng.random() < self.spawn_burst_probability:
-                spawn_count = int(self.rng.integers(self.spawn_burst_min, self.spawn_burst_max + 1))
-            for _ in range(spawn_count):
-                if len(self.steams) >= self.max_steams:
-                    break
-                self._spawn_steam_from_material()
+        if not terminated:
+            if self.burst_lull_spawn_enabled:
+                self._maybe_spawn_burst_lull()
+            else:
+                should_force_spawn = len(self.steams) == 0
+                should_random_spawn = (
+                    len(self.steams) < self.max_steams
+                    and self.steps_since_spawn >= self.spawn_cooldown_steps
+                    and self.rng.random() < self.spawn_probability
+                )
+                if should_force_spawn or should_random_spawn:
+                    spawn_count = 1
+                    if should_random_spawn and self.rng.random() < self.spawn_burst_probability:
+                        spawn_count = int(self.rng.integers(self.spawn_burst_min, self.spawn_burst_max + 1))
+                    self._spawn_steam_batch(spawn_count)
 
         self._update_steam_trend()
         self._update_material()
@@ -665,24 +719,34 @@ class ShangZengEnv(gym.Env):
         # Age is a persistent neglect signal. It does not imply timeout expiry.
         age_score = float(np.clip(steam["age"] / max(self.max_steam_age, 1), 0.0, 1.0))
 
-        grid_dist = np.linalg.norm(self.grid_world_xy - cell_xy, axis=-1)
-        local_gap = float(np.mean(
-            np.maximum(self.target_layer_height - self.material_height, 0.0)
-            * np.exp(-(grid_dist ** 2) / (2.0 * self.deposit_sigma ** 2))
-        ))
-        material_score = float(np.clip(local_gap / max(self.target_layer_height, 1e-6), 0.0, 1.0))
+        material_score = 0.0
+        if self.material_observation_enabled:
+            grid_dist = np.linalg.norm(self.grid_world_xy - cell_xy, axis=-1)
+            local_gap = float(np.mean(
+                np.maximum(self.target_layer_height - self.material_height, 0.0)
+                * np.exp(-(grid_dist ** 2) / (2.0 * self.deposit_sigma ** 2))
+            ))
+            material_score = float(np.clip(local_gap / max(self.target_layer_height, 1e-6), 0.0, 1.0))
         thermal_score = float(np.clip(self._thermal_score_at_xy(cell_xy), 0.0, 1.0))
 
         reach_offset = float(np.linalg.norm(cell_xy - self.home_ee_pos[:2])) if self.home_ee_pos is not None else 0.0
         reachability_score = float(1.0 - np.clip(reach_offset / max(self.max_target_offset, 1e-6), 0.0, 1.0))
 
-        risk_score = float(
-            0.35 * age_score
-            + 0.25 * distance_score
-            + 0.15 * material_score
-            + 0.10 * reachability_score
-            + 0.15 * thermal_score
-        )
+        if self.material_observation_enabled:
+            risk_score = float(
+                0.35 * age_score
+                + 0.25 * distance_score
+                + 0.15 * material_score
+                + 0.10 * reachability_score
+                + 0.15 * thermal_score
+            )
+        else:
+            risk_score = float(
+                0.40 * age_score
+                + 0.30 * distance_score
+                + 0.10 * reachability_score
+                + 0.20 * thermal_score
+            )
         return {
             "selected_target_id": int(steam.get("id", -1)),
             "selected_target_x": float(cell_xy[0]),
@@ -816,7 +880,7 @@ class ShangZengEnv(gym.Env):
             float(np.clip(spread, 0.0, 1.0)),
             float(self.steam_trend[0]),
             float(self.steam_trend[1]),
-            float(np.clip(self.steps_since_spawn / cooldown, 0.0, 1.0)),
+            float(self._spawn_readiness()),
             float(np.clip(len(self.steams) / max(self.max_steams, 1), 0.0, 1.0)),
             float(np.clip(recent_count / recent_capacity, 0.0, 1.0)),
         ], dtype=np.float32)
@@ -837,14 +901,23 @@ class ShangZengEnv(gym.Env):
         cover_heat = self._thermal_score_at_xy(self.cover_center)
         target_heat = self._thermal_score_at_xy(target_xy) if target_xy is not None else 0.0
         cooldown = max(int(self.spawn_cooldown_steps), 1)
-        spawn_ready = float(np.clip(self.steps_since_spawn / cooldown, 0.0, 1.0))
+        spawn_ready = self._spawn_readiness()
         active_room = float(np.clip(1.0 - len(self.steams) / max(self.max_steams, 1), 0.0, 1.0))
-        spawn_pressure = float(np.clip(self.spawn_probability * cooldown * spawn_ready * active_room, 0.0, 1.0))
+        if self.burst_lull_spawn_enabled:
+            lull_gate = 1.0 if self.burst_lull_lull_remaining <= 0 else 0.0
+            sparse_gate = 1.0 if len(self.steams) <= int(self.burst_lull_sparse_threshold) else 0.35
+            spawn_pressure = float(np.clip(spawn_ready * active_room * lull_gate * sparse_gate, 0.0, 1.0))
+        else:
+            spawn_pressure = float(np.clip(self.spawn_probability * cooldown * spawn_ready * active_room, 0.0, 1.0))
         if self.spawn_burst_max >= self.spawn_burst_min:
             burst_mean = 0.5 * (self.spawn_burst_min + self.spawn_burst_max)
         else:
             burst_mean = 1.0
-        burst_pressure = float(np.clip(self.spawn_burst_probability * max(burst_mean - 1.0, 0.0), 0.0, 1.0))
+        if self.burst_lull_spawn_enabled:
+            burst_capacity = max(float(self.burst_lull_burst_max - 1), 1.0)
+            burst_pressure = float(np.clip(spawn_ready * active_room * burst_capacity / 4.0, 0.0, 1.0))
+        else:
+            burst_pressure = float(np.clip(self.spawn_burst_probability * max(burst_mean - 1.0, 0.0), 0.0, 1.0))
 
         return np.array([
             float(hotspot_rel[0]),
@@ -858,8 +931,7 @@ class ShangZengEnv(gym.Env):
         ], dtype=np.float32)
 
     def _route_summary_values(self, target_xy=None):
-        cooldown = max(int(self.spawn_cooldown_steps), 1)
-        spawn_ready = float(np.clip(self.steps_since_spawn / cooldown, 0.0, 1.0))
+        spawn_ready = self._spawn_readiness()
         stagnation_score = float(np.clip(self.steps_since_cover / max(self.max_steam_age, 1), 0.0, 1.0))
         values = {
             "route_active_density": float(np.clip(len(self.steams) / max(self.max_steams, 1), 0.0, 1.0)),
@@ -1241,11 +1313,97 @@ class ShangZengEnv(gym.Env):
             return None
         return max(self.thermal_hotspots, key=lambda hotspot: float(hotspot.get("amp", 1.0)))
 
+    def _spawn_readiness(self):
+        if self.burst_lull_spawn_enabled:
+            if self.burst_lull_pending_count > 0:
+                return 1.0
+            charge_steps = max(int(self.burst_lull_charge_steps), 1)
+            return float(np.clip(self.burst_lull_charge / charge_steps, 0.0, 1.0))
+        cooldown = max(int(self.spawn_cooldown_steps), 1)
+        return float(np.clip(self.steps_since_spawn / cooldown, 0.0, 1.0))
+
+    def _enter_burst_lull_lull(self):
+        if not self.burst_lull_spawn_enabled:
+            return
+        self.burst_lull_lull_remaining = max(
+            int(self.burst_lull_lull_remaining),
+            int(self.burst_lull_lull_steps),
+        )
+        self.burst_lull_pending_count = 0
+        self.burst_lull_next_spawn_delay = 0
+        self.burst_lull_phase = "lull"
+
+    def _spawn_steam_batch(self, count):
+        spawned = 0
+        for _ in range(max(int(count), 0)):
+            if len(self.steams) >= self.max_steams:
+                break
+            if self._spawn_steam_from_material():
+                spawned += 1
+        return spawned
+
+    def _maybe_spawn_burst_lull(self):
+        self.last_burst_spawn_count = 0
+        charge_steps = max(int(self.burst_lull_charge_steps), 1)
+
+        if self.burst_lull_pending_count > 0:
+            self.burst_lull_phase = "burst"
+            if len(self.steams) >= self.max_steams:
+                self.burst_lull_phase = "dense"
+                return
+            if self.burst_lull_next_spawn_delay > 0:
+                self.burst_lull_next_spawn_delay -= 1
+                return
+            spawned = self._spawn_steam_batch(1)
+            if spawned:
+                self.last_burst_spawn_count = spawned
+                self.burst_lull_pending_count = max(0, self.burst_lull_pending_count - spawned)
+                self.burst_lull_next_spawn_delay = max(int(self.burst_lull_burst_interval_steps), 1)
+            if self.burst_lull_pending_count <= 0:
+                self.burst_lull_phase = "charging"
+            return
+
+        self.burst_lull_charge = int(min(self.burst_lull_charge + 1, charge_steps * 2))
+
+        if self.burst_lull_lull_remaining > 0:
+            self.burst_lull_lull_remaining -= 1
+            self.burst_lull_phase = "lull"
+            ready_for_trickle = self.burst_lull_charge >= max(charge_steps // 2, 1)
+            if (
+                ready_for_trickle
+                and len(self.steams) <= int(self.burst_lull_sparse_threshold)
+                and len(self.steams) < self.max_steams
+                and self.rng.random() < float(self.burst_lull_trickle_probability)
+            ):
+                spawned = self._spawn_steam_batch(1)
+                if spawned:
+                    self.last_burst_spawn_count = spawned
+                    self.burst_lull_charge = max(0, self.burst_lull_charge - charge_steps // 3)
+            return
+
+        room = int(self.max_steams - len(self.steams))
+        if room <= 0:
+            self.burst_lull_phase = "dense"
+            return
+
+        if len(self.steams) > int(self.burst_lull_sparse_threshold) or self.burst_lull_charge < charge_steps:
+            self.burst_lull_phase = "charging"
+            return
+
+        max_count = min(max(int(self.burst_lull_burst_max), 1), room)
+        min_count = min(max(int(self.burst_lull_burst_min), 1), max_count)
+        spawn_count = int(self.rng.integers(min_count, max_count + 1))
+        self.burst_lull_pending_count = spawn_count
+        self.burst_lull_next_spawn_delay = 0
+        self.burst_lull_charge = 0
+        self.burst_lull_phase = "burst"
+        self._maybe_spawn_burst_lull()
+
     def _spawn_steam_from_material(self):
         scores = self._steam_spawn_scores()
         total = float(scores.sum())
         if total <= 1e-8:
-            return
+            return False
         flat_idx = int(self.rng.choice(scores.size, p=(scores.reshape(-1) / total)))
         i, j = np.unravel_index(flat_idx, scores.shape)
         xy = self.grid_world_xy[i, j] + self.rng.normal(0.0, self.cell_half_size * 0.6, size=2)
@@ -1267,6 +1425,7 @@ class ShangZengEnv(gym.Env):
         self.spawned_this_step_positions.append(xy.astype(np.float32))
         self.recent_spawn_positions.append(xy.astype(np.float32))
         self.steps_since_spawn = 0
+        return True
 
     def _steam_spawn_scores(self):
         h = self.material_height
@@ -1532,6 +1691,15 @@ class ShangZengEnv(gym.Env):
             "domain_randomization_enabled": bool(self.domain_randomization_enabled),
             "domain_randomization_scale": float(self.domain_randomization_scale),
             "spawn_burst_probability": float(self.spawn_burst_probability),
+            "burst_lull_spawn_enabled": bool(self.burst_lull_spawn_enabled),
+            "burst_lull_phase": str(self.burst_lull_phase),
+            "burst_lull_lull_remaining": int(self.burst_lull_lull_remaining),
+            "burst_lull_charge": int(self.burst_lull_charge),
+            "burst_lull_charge_score": float(self._spawn_readiness()),
+            "burst_lull_pending_count": int(self.burst_lull_pending_count),
+            "burst_lull_next_spawn_delay": int(self.burst_lull_next_spawn_delay),
+            "burst_lull_burst_interval_steps": int(self.burst_lull_burst_interval_steps),
+            "last_burst_spawn_count": int(self.last_burst_spawn_count),
             "thermal_spawn_enabled": bool(self.thermal_spawn_enabled),
             "thermal_hotspot_count": int(len(self.thermal_hotspots)),
             "thermal_background_weight": float(self.thermal_background_weight),

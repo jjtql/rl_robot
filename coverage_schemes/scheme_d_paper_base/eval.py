@@ -42,6 +42,13 @@ def configure_env_from_config(env, config):
     env.set_target_selector(config.get("target_selector", "risk_aware"))
     env.potential_shaping_enabled = bool(config.get("potential_shaping", True))
     env.best_progress_enabled = bool(config.get("best_progress_reward", True))
+    env.cover_reward_scale = float(config.get("cover_reward_scale", env.cover_reward_scale))
+    env.quick_cover_bonus_scale = float(config.get("quick_cover_bonus_scale", env.quick_cover_bonus_scale))
+    env.precision_bonus_scale = float(config.get("precision_bonus_scale", env.precision_bonus_scale))
+    env.potential_gain_scale = float(config.get("potential_gain_scale", env.potential_gain_scale))
+    env.best_progress_gain_scale = float(config.get("best_progress_gain_scale", env.best_progress_gain_scale))
+    env.active_steam_penalty_scale = float(config.get("active_steam_penalty_scale", env.active_steam_penalty_scale))
+    env.age_penalty_scale = float(config.get("age_penalty_scale", env.age_penalty_scale))
     env.material_observation_enabled = bool(config.get("material_observation", True))
     env.material_tv_reward_enabled = bool(config.get("material_tv_reward", False))
     env.material_tv_reward_gain = float(config.get("material_tv_reward_gain", env.material_tv_reward_gain))
@@ -63,6 +70,21 @@ def configure_env_from_config(env, config):
         config.get("thermal_recent_spawn_suppression", env.thermal_recent_spawn_suppression)
     )
     env.thermal_recent_spawn_memory = int(config.get("thermal_recent_spawn_memory", env.thermal_recent_spawn_memory))
+    env.burst_lull_spawn_enabled = bool(config.get("burst_lull_spawn", False))
+    env.burst_lull_lull_steps = int(config.get("burst_lull_lull_steps", env.burst_lull_lull_steps))
+    env.burst_lull_charge_steps = int(config.get("burst_lull_charge_steps", env.burst_lull_charge_steps))
+    env.burst_lull_sparse_threshold = int(
+        config.get("burst_lull_sparse_threshold", env.burst_lull_sparse_threshold)
+    )
+    env.burst_lull_burst_min = int(config.get("burst_lull_burst_min", env.burst_lull_burst_min))
+    env.burst_lull_burst_max = int(config.get("burst_lull_burst_max", env.burst_lull_burst_max))
+    env.burst_lull_burst_interval_steps = int(
+        config.get("burst_lull_burst_interval_steps", env.burst_lull_burst_interval_steps)
+    )
+    env.burst_lull_trickle_probability = float(
+        config.get("burst_lull_trickle_probability", env.burst_lull_trickle_probability)
+    )
+    env.burst_lull_initial_burst = bool(config.get("burst_lull_initial_burst", env.burst_lull_initial_burst))
     env.spawn_history_observation_enabled = bool(
         config.get("use_spawn_history_observation", env.spawn_history_observation_enabled)
     )
@@ -187,6 +209,15 @@ def evaluate_episode(env, policy, seed, max_steps, demo_mode=False):
         "action_noise_std": float(info.get("action_noise_std", 0.0)),
         "domain_randomization_enabled": bool(info.get("domain_randomization_enabled", False)),
         "spawn_burst_probability": float(info.get("spawn_burst_probability", 0.0)),
+        "burst_lull_spawn_enabled": bool(info.get("burst_lull_spawn_enabled", False)),
+        "burst_lull_phase": str(info.get("burst_lull_phase", "")),
+        "burst_lull_lull_remaining": int(info.get("burst_lull_lull_remaining", 0)),
+        "burst_lull_charge": int(info.get("burst_lull_charge", 0)),
+        "burst_lull_charge_score": float(info.get("burst_lull_charge_score", 0.0)),
+        "burst_lull_pending_count": int(info.get("burst_lull_pending_count", 0)),
+        "burst_lull_next_spawn_delay": int(info.get("burst_lull_next_spawn_delay", 0)),
+        "burst_lull_burst_interval_steps": int(info.get("burst_lull_burst_interval_steps", 0)),
+        "last_burst_spawn_count": int(info.get("last_burst_spawn_count", 0)),
         "thermal_spawn_enabled": bool(info.get("thermal_spawn_enabled", False)),
         "thermal_hotspot_count": int(info.get("thermal_hotspot_count", 0)),
         "thermal_background_weight": float(info.get("thermal_background_weight", 0.0)),
