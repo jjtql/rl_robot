@@ -21,6 +21,8 @@ scripts/                              Reproducible command wrappers
 docs/                                 Project and method notes
 ```
 
+The latest implementation plan is documented in `docs/latency-first-continuous-session-v11.md`.
+
 Generated runs, checkpoints, virtual environments, and local editor files are intentionally excluded.
 
 ## Environment
