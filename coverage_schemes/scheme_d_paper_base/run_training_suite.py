@@ -890,6 +890,86 @@ METHODS = {
 }
 
 
+def _replace_flag_value(items, flag, value):
+    out = []
+    i = 0
+    while i < len(items):
+        if items[i] == flag and i + 1 < len(items):
+            out.extend([flag, str(value)])
+            i += 2
+        else:
+            out.append(items[i])
+            i += 1
+    return out
+
+
+def _drop_flags(items, flags=(), value_flags=()):
+    flags = set(flags)
+    value_flags = set(value_flags)
+    out = []
+    i = 0
+    while i < len(items):
+        item = items[i]
+        if item in flags:
+            i += 1
+        elif item in value_flags:
+            i += 2
+        else:
+            out.append(item)
+            i += 1
+    return out
+
+
+_V11 = METHODS["thermal_lstm_spawnhist_latency_v11"]
+METHODS.update({
+    "thermal_lstm_spawnhist_latency_v11_no_pred": _replace_flag_value(
+        _replace_flag_value(_V11, "--pred-coef", "0.0"),
+        "--prediction-horizon-steps",
+        "0",
+    ),
+    "thermal_lstm_spawnhist_latency_v11_no_carry": _replace_flag_value(
+        _replace_flag_value(
+            _drop_flags(_V11, flags=("--carry-lstm-state-across-chunks",)),
+            "--continuous-session-chunks",
+            "1",
+        ),
+        "--lstm-sequence-chunks",
+        "1",
+    ),
+    "thermal_lstm_spawnhist_latency_v11_no_latency_reward": _drop_flags(
+        _V11,
+        flags=("--latency-first-reward",),
+    ),
+    "thermal_lstm_spawnhist_latency_v11_no_attention": _drop_flags(
+        _V11,
+        flags=("--steam-attention",),
+        value_flags=("--attention-steam-count",),
+    ),
+    "thermal_lstm_spawnhist_latency_v11_no_residual": _drop_flags(
+        _V11,
+        flags=("--residual-policy", "--residual-action-shield"),
+        value_flags=(
+            "--residual-base-policy",
+            "--residual-glue",
+            "--residual-sparse-base-policy",
+            "--residual-dense-base-policy",
+            "--residual-phase-sparse-threshold",
+            "--residual-phase-dense-threshold",
+            "--residual-sparse-beta-scale",
+            "--residual-lull-beta-scale",
+            "--residual-charging-beta-scale",
+            "--residual-dense-beta-scale",
+            "--residual-burst-beta-scale",
+            "--stagnation-recovery-steps",
+            "--residual-beta",
+            "--residual-beta-start",
+            "--residual-beta-end",
+            "--residual-beta-warmup-steps",
+        ),
+    ),
+})
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser(description="Generate or execute multi-seed PPO training commands.")
     parser.add_argument("--python", default=".venv/bin/python")

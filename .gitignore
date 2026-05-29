@@ -14,6 +14,7 @@ runs/
 *.ckpt
 *.onnx
 *.log
+MUJOCO_LOG.TXT
 
 # Local editor/tool state
 .vscode/

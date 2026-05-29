@@ -138,6 +138,8 @@ The phase-aware residual scales still give LSTM-PPO more freedom in sparse/lull 
 - `coverage_schemes/scheme_d_paper_base/config.py`
 - `scripts/train_memory_v11_latency_seeds01.sh`
 - `scripts/eval_v11_latency_quick.sh`
+- `scripts/train_v11_ablation_commands.sh`
+- `scripts/eval_v11_real_time_quick.sh`
 - `rl-robot-project-state/SKILL.md`
 
 ## Training Command
@@ -159,6 +161,170 @@ scripts/eval_v11_latency_quick.sh \
 ```
 
 The quick eval uses a longer 3200-step demo-mode window so response metrics are measured over a more realistic continuous interval.
+
+## Real-Time Reporting
+
+MuJoCo uses `0.002 s/step` in the current XML. That is the simulator integration step, not necessarily the real high-level robot control period. For paper tables, use an explicit decision period whenever the claim is about real response time:
+
+```bash
+cd /Data2/jj/rl_robot
+DECISION_DT_SECONDS=0.05 scripts/eval_v11_real_time_quick.sh \
+  runs/scheme_d_paper_suite/thermal_lstm_spawnhist_latency_v11_seed1/checkpoints/scheme_d_paper_base_latest_full.pt \
+  runs/matrix/thermal_lstm_spawnhist_latency_v11_real_time_quick
+```
+
+The same option can be passed directly:
+
+```bash
+.venv/bin/python -m coverage_schemes.scheme_d_paper_base.run_matrix \
+  --model runs/scheme_d_paper_suite/thermal_lstm_spawnhist_latency_v11_seed1/checkpoints/scheme_d_paper_base_latest_full.pt \
+  --policies horizon2,dynamic_weighted,planner_ensemble,ppo \
+  --stages multi_realistic,multi_hard,multi_extreme \
+  --seeds 100,101,102 \
+  --episodes 3 \
+  --steps 3200 \
+  --demo-mode \
+  --decision-dt-seconds 0.05 \
+  --output-dir runs/matrix/thermal_lstm_spawnhist_latency_v11_real_time_quick
+```
+
+When `--decision-dt-seconds 0.05` is used, latency fields such as `cover_latency_p90_seconds` and `response_sla_seconds` are reported in real high-level control time. The CSV also keeps `sim_step_seconds`, so the paper can state both the simulator step and the decision-time reporting convention.
+
+Do not compare a `0.002 s/step` table against a `0.05 s/decision` table. They answer different questions.
+
+## Ablation Suite
+
+The main paper needs actual ablations, not only an ablation plan. The current runnable v11 ablation methods are:
+
+| Method | Purpose |
+| --- | --- |
+| `thermal_lstm_spawnhist_latency_v11` | Full method |
+| `thermal_lstm_spawnhist_latency_v11_no_pred` | Remove auxiliary spawn prediction |
+| `thermal_lstm_spawnhist_latency_v11_no_carry` | Remove continuous recurrent carry across chunks |
+| `thermal_lstm_spawnhist_latency_v11_no_latency_reward` | Remove latency-first reward switch |
+| `thermal_lstm_spawnhist_latency_v11_no_attention` | Remove steam attention observation |
+| `thermal_lstm_spawnhist_latency_v11_no_residual` | Remove planner residual glue |
+
+Generate the full command list:
+
+```bash
+cd /Data2/jj/rl_robot
+scripts/train_v11_ablation_commands.sh
+```
+
+Run the ablations:
+
+```bash
+cd /Data2/jj/rl_robot
+SEEDS=0,1,2 scripts/train_v11_ablation_commands.sh --execute --jobs 2
+```
+
+For a smaller first pass:
+
+```bash
+cd /Data2/jj/rl_robot
+METHODS=thermal_lstm_spawnhist_latency_v11,thermal_lstm_spawnhist_latency_v11_no_pred,thermal_lstm_spawnhist_latency_v11_no_carry \
+SEEDS=0,1 \
+scripts/train_v11_ablation_commands.sh --execute --jobs 2
+```
+
+After training, evaluate each checkpoint with the same held-out seeds, stages, steps, demo-mode flag, and decision-time convention. The paper table should report at least:
+
+1. SLA success rate
+2. p90 cover latency
+3. mean cover latency
+4. covered per second
+5. active steam mean/max
+6. oldest active age max
+7. action smoothness
+8. coverage rate
+
+## Current V11 Evidence
+
+Completed v11 training was stable and much stronger than v9 in training coverage, but the held-out story is mixed.
+
+Training last50 coverage:
+
+| Stage | seed0 | seed1 |
+| --- | ---: | ---: |
+| multi_low | 0.862 | 0.864 |
+| multi_realistic | 0.820 | 0.826 |
+| multi_hard | 0.779 | 0.782 |
+| multi_extreme | 0.766 | 0.743 |
+
+Held-out quick eval used seeds `100,101,102`, 3 episodes per seed, 3200 steps, demo-mode. PPO values below average seed0 and seed1 checkpoints; horizon2 is the deterministic planner baseline.
+
+| Stage | Method | Coverage | Mean Latency | P90 Latency | SLA |
+| --- | --- | ---: | ---: | ---: | ---: |
+| multi_realistic | horizon2 | 0.895 | 0.681s | 1.208s | 0.177 |
+| multi_realistic | PPO avg | 0.911 | 0.643s | 1.224s | 0.245 |
+| multi_hard | horizon2 | 0.860 | 0.790s | 1.420s | 0.163 |
+| multi_hard | PPO avg | 0.861 | 0.798s | 1.547s | 0.169 |
+| multi_extreme | horizon2 | 0.814 | 0.880s | 1.704s | 0.175 |
+| multi_extreme | PPO avg | 0.855 | 0.906s | 1.660s | 0.144 |
+
+Interpretation:
+
+- Realistic: PPO is modestly better on coverage, mean latency, and SLA, but p90 latency is not clearly better.
+- Hard: PPO is essentially tied with horizon2 and does not justify a strong claim.
+- Extreme: PPO improves coverage robustness and p90 latency slightly, but SLA is worse.
+
+This supports a cautious engineering/application paper, not a top-venue claim that LSTM-PPO solves latency-first coverage.
+
+## Paper-Safe Framing
+
+Safe claims:
+
+- A planner-guided recurrent residual PPO framework can be trained stably for continuous ShangZeng-style steam coverage.
+- Continuous session training, spawn-history observation, and latency-aware metrics better match the real task than short isolated episodes.
+- In extreme burst/lull settings, the recurrent residual policy can improve coverage robustness over a strong horizon2 planner.
+- The current method exposes the tension between high coverage and strict response-time SLA.
+
+Unsafe claims:
+
+- Do not claim that v11 solves real-time response.
+- Do not claim broad superiority over horizon2 on all stages.
+- Do not use coverage alone as the headline metric.
+- Do not hide the 0.002s simulator step when discussing real deployment time.
+
+Recommended title direction:
+
+```text
+Planner-Guided Recurrent Residual PPO for Continuous Steam-Point Coverage in ShangZeng Manipulation
+```
+
+Better abstract logic:
+
+1. Introduce the real task as continuous steam-point response under burst/lull generation.
+2. Explain why pure receding-horizon planning is strong when many visible points exist but weak for memory-driven sparse phases.
+3. Propose LSTM-PPO as a residual policy over horizon2, with spawn history, thermal context, phase-aware residual scaling, and latency-aware training.
+4. Evaluate coverage, latency distribution, SLA success, backlog, and smoothness.
+5. State the limitation honestly: strict SLA remains hard, especially under real decision-time scaling.
+
+## Viewer Check
+
+The live MuJoCo viewer requires a graphical display. On a remote server, run it through X11 forwarding or a remote desktop session. A missing display gives:
+
+```text
+GLFWError: X11: The DISPLAY environment variable is missing
+ERROR: could not initialize GLFW
+```
+
+Example viewer command after X11 is available:
+
+```bash
+cd /Data2/jj/rl_robot
+.venv/bin/python -m coverage_schemes.scheme_d_paper_base.test \
+  --policy ppo \
+  --model runs/scheme_d_paper_suite/thermal_lstm_spawnhist_latency_v11_seed1/checkpoints/scheme_d_paper_base_latest_full.pt \
+  --stage multi_extreme \
+  --seed 100 \
+  --steps 3200 \
+  --interval 100 \
+  --sleep 0.02
+```
+
+The viewer script now loads checkpoint config, burst/lull spawn, latency reward settings, residual PPO glue, and live latency/SLA metrics instead of running a mismatched older PPO path.
 
 ## Latency-First Checkpoint Sweep
 
@@ -193,6 +359,33 @@ python3 -m py_compile \
 A CPU smoke train completed 160 steps, triggered one PPO update, wrote checkpoints, and logged the new latency/SLA fields.
 
 A one-row eval matrix also completed and wrote p90/SLA summary columns.
+
+Additional checks after the paper/experiment update:
+
+```bash
+python3 -m py_compile \
+  coverage_schemes/scheme_d_paper_base/test.py \
+  coverage_schemes/scheme_d_paper_base/eval.py \
+  coverage_schemes/scheme_d_paper_base/run_matrix.py \
+  coverage_schemes/scheme_d_paper_base/checkpoint_sweep.py \
+  coverage_schemes/scheme_d_paper_base/run_training_suite.py \
+  coverage_schemes/scheme_d_paper_base/config.py
+
+.venv/bin/python -m coverage_schemes.scheme_d_paper_base.run_training_suite \
+  --methods thermal_lstm_spawnhist_latency_v11_no_pred,thermal_lstm_spawnhist_latency_v11_no_carry,thermal_lstm_spawnhist_latency_v11_no_latency_reward,thermal_lstm_spawnhist_latency_v11_no_attention,thermal_lstm_spawnhist_latency_v11_no_residual \
+  --seeds 0 \
+  --output runs/smoke/v11_ablation_commands_check.txt
+
+.venv/bin/python -m coverage_schemes.scheme_d_paper_base.run_matrix \
+  --policies horizon2 \
+  --stages multi_low \
+  --seeds 1 \
+  --episodes 1 \
+  --steps 20 \
+  --decision-dt-seconds 0.05 \
+  --demo-mode \
+  --output-dir runs/smoke/v11_decision_dt_eval
+```
 
 ## How To Judge V11
 

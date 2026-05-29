@@ -6,7 +6,7 @@ import numpy as np
 
 from .config import deep_update, load_config, set_global_seeds
 from .env import ShangZengEnv
-from .eval import configure_env_from_config, evaluate_episode
+from .eval import configure_env_from_config, evaluate_episode, resolve_metric_step_seconds
 from .policies import build_policy, checkpoint_config
 
 
@@ -27,6 +27,7 @@ def build_arg_parser():
     parser.add_argument("--seeds", default="0,1,2")
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--steps", type=int, default=800)
+    parser.add_argument("--decision-dt-seconds", type=float, help="Real high-level control period used to report time metrics.")
     parser.add_argument("--output-dir", default="runs/matrix")
     parser.add_argument("--stochastic", action="store_true")
     parser.add_argument("--demo-mode", action="store_true")
@@ -92,6 +93,8 @@ def main():
         config["device"] = args.device
     if args.target_selector is not None:
         config["target_selector"] = args.target_selector
+    if args.decision_dt_seconds is not None:
+        config["decision_dt_seconds"] = args.decision_dt_seconds
 
     policies = parse_csv_list(args.policies)
     if "ppo" in policies and not args.model:
@@ -130,6 +133,11 @@ def main():
                     if args.demo_mode:
                         env.target_success_count = max(env.target_success_count, args.steps)
                         env.target_coverage = 1.0
+                    metric_step_seconds = resolve_metric_step_seconds(
+                        env,
+                        config=config,
+                        override=args.decision_dt_seconds,
+                    )
 
                     policy = build_policy(
                         policy_name,
@@ -141,7 +149,14 @@ def main():
                     policy_rows = []
                     for episode in range(args.episodes):
                         ep_seed = seed * 10_000 + episode
-                        metrics = evaluate_episode(env, policy, ep_seed, args.steps, demo_mode=args.demo_mode)
+                        metrics = evaluate_episode(
+                            env,
+                            policy,
+                            ep_seed,
+                            args.steps,
+                            demo_mode=args.demo_mode,
+                            metric_step_seconds=metric_step_seconds,
+                        )
                         row = {
                             "policy": policy_name,
                             "method": policy.name,

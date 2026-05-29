@@ -18,6 +18,19 @@ def env_step_seconds(env):
     return step_seconds if step_seconds > 0.0 else 1.0
 
 
+def resolve_metric_step_seconds(env, config=None, override=None):
+    for value in (override, (config or {}).get("decision_dt_seconds")):
+        if value is None:
+            continue
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if value > 0.0:
+            return value
+    return env_step_seconds(env)
+
+
 def coverage_timing_metrics(steps, success_count, spawned_count, cover_latency_steps, step_seconds):
     episode_time_seconds = float(steps) * float(step_seconds)
     cover_latency_seconds = float(cover_latency_steps) * float(step_seconds)
@@ -122,12 +135,13 @@ def build_arg_parser():
     parser.add_argument("--device", help="PPO device override: auto, cpu, cuda, or cuda:N.")
     parser.add_argument("--target-selector", choices=["nearest", "risk_aware"], help="Target features/reward-shaping selector.")
     parser.add_argument("--max-steams", type=int, help="Override active steam capacity after curriculum configuration.")
+    parser.add_argument("--decision-dt-seconds", type=float, help="Real high-level control period used to report time metrics.")
     parser.add_argument("--stochastic", action="store_true")
     parser.add_argument("--demo-mode", action="store_true", help="Keep spawning after success instead of normal termination.")
     return parser
 
 
-def evaluate_episode(env, policy, seed, max_steps, demo_mode=False):
+def evaluate_episode(env, policy, seed, max_steps, demo_mode=False, metric_step_seconds=None):
     obs, info = env.reset(seed=seed)
     policy.reset()
     total_reward = 0.0
@@ -163,16 +177,20 @@ def evaluate_episode(env, policy, seed, max_steps, demo_mode=False):
     success_count = int(info.get("success_count", 0))
     spawned_count = int(info.get("spawned_count", 0))
     cover_latency_steps = float(info.get("cover_latency", 0.0))
+    sim_step_seconds = env_step_seconds(env)
+    step_seconds = sim_step_seconds if metric_step_seconds is None else float(metric_step_seconds)
     timing = coverage_timing_metrics(
         steps=steps,
         success_count=success_count,
         spawned_count=spawned_count,
         cover_latency_steps=cover_latency_steps,
-        step_seconds=env_step_seconds(env),
+        step_seconds=step_seconds,
     )
     step_seconds = timing["step_seconds"]
 
     metrics = {
+        "sim_step_seconds": float(sim_step_seconds),
+        "decision_dt_seconds": float(step_seconds),
         "steps": steps,
         "episode_reward": float(total_reward),
         "coverage_rate": float(info.get("coverage_rate", 0.0)),
@@ -287,6 +305,8 @@ def main():
         config["device"] = args.device
     if args.target_selector is not None:
         config["target_selector"] = args.target_selector
+    if args.decision_dt_seconds is not None:
+        config["decision_dt_seconds"] = args.decision_dt_seconds
     set_global_seeds(args.seed)
 
     env = ShangZengEnv(
@@ -309,6 +329,7 @@ def main():
     if args.demo_mode:
         env.target_success_count = max(env.target_success_count, args.steps)
         env.target_coverage = 1.0
+    metric_step_seconds = resolve_metric_step_seconds(env, config=config, override=args.decision_dt_seconds)
 
     policy = build_policy(
         args.policy,
@@ -321,7 +342,14 @@ def main():
     rows = []
     for episode in range(args.episodes):
         ep_seed = args.seed + episode
-        metrics = evaluate_episode(env, policy, ep_seed, args.steps, demo_mode=args.demo_mode)
+        metrics = evaluate_episode(
+            env,
+            policy,
+            ep_seed,
+            args.steps,
+            demo_mode=args.demo_mode,
+            metric_step_seconds=metric_step_seconds,
+        )
         row = {
             "method": method,
             "policy": args.policy,

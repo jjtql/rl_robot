@@ -120,8 +120,58 @@ Implemented in:
   - `--rank-objective latency` ranks by SLA, p90 latency, speed, misses, then coverage
 - `coverage_schemes/scheme_d_paper_base/run_training_suite.py`
   - preset `thermal_lstm_spawnhist_latency_v11`
+  - v11 ablation presets:
+    - `thermal_lstm_spawnhist_latency_v11_no_pred`
+    - `thermal_lstm_spawnhist_latency_v11_no_carry`
+    - `thermal_lstm_spawnhist_latency_v11_no_latency_reward`
+    - `thermal_lstm_spawnhist_latency_v11_no_attention`
+    - `thermal_lstm_spawnhist_latency_v11_no_residual`
 - `scripts/train_memory_v11_latency_seeds01.sh`
 - `scripts/eval_v11_latency_quick.sh`
+- `scripts/train_v11_ablation_commands.sh`
+- `scripts/eval_v11_real_time_quick.sh`
+
+Extra v11 experiment support:
+
+- `eval.py`, `run_matrix.py`, and `checkpoint_sweep.py` support `--decision-dt-seconds`.
+- Use `--decision-dt-seconds 0.05` when reporting real high-level robot decision time.
+- CSV keeps both `sim_step_seconds` and `decision_dt_seconds`.
+- `coverage_schemes/scheme_d_paper_base/test.py` now uses `build_policy()` and checkpoint config, so the MuJoCo viewer path matches v11 residual PPO, burst/lull spawn, thermal context, and latency metrics.
+
+Latest completed v11 training:
+
+| Stage | seed0 last50 | seed1 last50 |
+| --- | ---: | ---: |
+| multi_low | 0.862 | 0.864 |
+| multi_realistic | 0.820 | 0.826 |
+| multi_hard | 0.779 | 0.782 |
+| multi_extreme | 0.766 | 0.743 |
+
+Held-out quick eval, seeds 100/101/102, 3 episodes per seed, 3200-step demo-mode:
+
+| Stage | Method | Coverage | Mean Latency | P90 Latency | SLA |
+| --- | --- | ---: | ---: | ---: | ---: |
+| multi_realistic | horizon2 | 0.895 | 0.681s | 1.208s | 0.177 |
+| multi_realistic | PPO avg | 0.911 | 0.643s | 1.224s | 0.245 |
+| multi_hard | horizon2 | 0.860 | 0.790s | 1.420s | 0.163 |
+| multi_hard | PPO avg | 0.861 | 0.798s | 1.547s | 0.169 |
+| multi_extreme | horizon2 | 0.814 | 0.880s | 1.704s | 0.175 |
+| multi_extreme | PPO avg | 0.855 | 0.906s | 1.660s | 0.144 |
+
+Interpretation:
+
+- Realistic: PPO is modestly better on coverage, mean latency, and SLA, but p90 is not clearly better.
+- Hard: PPO is tied with horizon2.
+- Extreme: PPO improves coverage robustness and p90 slightly, but SLA is worse.
+- This is usable for a cautious engineering/application paper, not for a strong "latency solved" claim.
+
+Paper-safe framing:
+
+- Position the method as planner-guided recurrent residual PPO for continuous steam-point coverage.
+- Lead with continuous operation, burst/lull generation, latency distribution, backlog, and smoothness.
+- Claim robustness under extreme burst/lull only where the table supports it.
+- Do not use coverage alone as the headline metric.
+- Do not hide the simulator timebase: MuJoCo XML uses `0.002 s/step`; real control reporting should use `--decision-dt-seconds`, e.g. `0.05`.
 
 Old v10 candidate remains useful context:
 
@@ -193,6 +243,29 @@ scripts/eval_v11_latency_quick.sh \
   runs/matrix/thermal_lstm_spawnhist_latency_v11_quick
 ```
 
+Real high-level control-time eval v11:
+
+```bash
+cd /Data2/jj/rl_robot
+DECISION_DT_SECONDS=0.05 scripts/eval_v11_real_time_quick.sh \
+  runs/scheme_d_paper_suite/thermal_lstm_spawnhist_latency_v11_seed1/checkpoints/scheme_d_paper_base_latest_full.pt \
+  runs/matrix/thermal_lstm_spawnhist_latency_v11_real_time_quick
+```
+
+Generate v11 ablation commands:
+
+```bash
+cd /Data2/jj/rl_robot
+scripts/train_v11_ablation_commands.sh
+```
+
+Run v11 ablations:
+
+```bash
+cd /Data2/jj/rl_robot
+SEEDS=0,1,2 scripts/train_v11_ablation_commands.sh --execute --jobs 2
+```
+
 Latency-first checkpoint sweep:
 
 ```bash
@@ -205,8 +278,23 @@ scripts/eval_checkpoint_sweep.sh \
   --episodes 3 \
   --steps 3200 \
   --demo-mode \
+  --decision-dt-seconds 0.05 \
   --rank-objective latency \
   --device cpu
+```
+
+Live MuJoCo viewer, after X11 forwarding or remote desktop is available:
+
+```bash
+cd /Data2/jj/rl_robot
+.venv/bin/python -m coverage_schemes.scheme_d_paper_base.test \
+  --policy ppo \
+  --model runs/scheme_d_paper_suite/thermal_lstm_spawnhist_latency_v11_seed1/checkpoints/scheme_d_paper_base_latest_full.pt \
+  --stage multi_extreme \
+  --seed 100 \
+  --steps 3200 \
+  --interval 100 \
+  --sleep 0.02
 ```
 
 Train v10 two seeds:

@@ -128,6 +128,7 @@ def build_arg_parser():
     parser.add_argument("--seeds", default="100,101,102")
     parser.add_argument("--episodes", type=int, default=5)
     parser.add_argument("--steps", type=int, default=800)
+    parser.add_argument("--decision-dt-seconds", type=float, help="Pass --decision-dt-seconds to run_matrix.")
     parser.add_argument("--demo-mode", action="store_true", help="Pass --demo-mode to run_matrix for long continuous-session evaluation.")
     parser.add_argument("--device", help="Device override passed to run_matrix.")
     parser.add_argument(
@@ -183,6 +184,8 @@ def main():
         ]
         if args.device:
             command.extend(["--device", args.device])
+        if args.decision_dt_seconds is not None:
+            command.extend(["--decision-dt-seconds", str(args.decision_dt_seconds)])
         if args.demo_mode:
             command.append("--demo-mode")
         print(f"\n=== checkpoint {tag} ===", flush=True)
