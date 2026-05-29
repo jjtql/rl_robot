@@ -134,13 +134,83 @@ The phase-aware residual scales still give LSTM-PPO more freedom in sparse/lull 
 - `coverage_schemes/scheme_d_paper_base/eval.py`
 - `coverage_schemes/scheme_d_paper_base/run_matrix.py`
 - `coverage_schemes/scheme_d_paper_base/checkpoint_sweep.py`
+- `coverage_schemes/scheme_d_paper_base/collect_eval_summaries.py`
 - `coverage_schemes/scheme_d_paper_base/run_training_suite.py`
 - `coverage_schemes/scheme_d_paper_base/config.py`
 - `scripts/train_memory_v11_latency_seeds01.sh`
 - `scripts/eval_v11_latency_quick.sh`
 - `scripts/train_v11_ablation_commands.sh`
 - `scripts/eval_v11_real_time_quick.sh`
+- `scripts/run_v11_full_paper_suite.sh`
 - `rl-robot-project-state/SKILL.md`
+
+## One-Command Paper Suite
+
+Use this as the main paper experiment entry point:
+
+```bash
+cd /Data2/jj/rl_robot
+scripts/run_v11_full_paper_suite.sh
+```
+
+By default this runs:
+
+- full v11 plus all v11 ablations,
+- seeds `0,1,2`,
+- two concurrent training jobs,
+- held-out latest-checkpoint evaluation for every trained PPO run,
+- `horizon2`, `dynamic_weighted`, and `planner_ensemble` baselines,
+- stages `multi_low,multi_realistic,multi_hard,multi_extreme`,
+- eval seeds `100,101,102`,
+- 3 eval episodes per seed,
+- 3200-step demo-mode windows,
+- real control-time reporting with `DECISION_DT_SECONDS=0.05`.
+
+Main outputs:
+
+```text
+runs/<suite_name>/train/
+runs/<suite_name>/eval/latest_real_time/combined_summary.csv
+runs/<suite_name>/eval/latest_real_time/paper_summary.csv
+```
+
+Common variants:
+
+```bash
+# More or fewer parallel training jobs.
+TRAIN_JOBS=3 scripts/run_v11_full_paper_suite.sh
+
+# Only evaluate existing runs, no training.
+SKIP_TRAIN=1 RUN_DIR=runs/v11_paper_suite/train scripts/run_v11_full_paper_suite.sh
+
+# Train only.
+SKIP_EVAL=1 scripts/run_v11_full_paper_suite.sh
+
+# Include simulator-time tables in addition to real decision-time tables.
+RUN_SIM_TIME_EVAL=1 scripts/run_v11_full_paper_suite.sh
+
+# Also sweep saved checkpoints for the full v11 method.
+RUN_CHECKPOINT_SWEEP=1 scripts/run_v11_full_paper_suite.sh
+```
+
+For a cheaper dry run:
+
+```bash
+cd /Data2/jj/rl_robot
+METHODS=thermal_lstm_spawnhist_latency_v11 \
+SEEDS=99 \
+SKIP_TRAIN=1 \
+RUN_DIR=runs/scheme_d_paper_suite \
+EVAL_DIR=runs/smoke/v11_full_paper_suite_script \
+EVAL_STAGES=multi_low \
+EVAL_SEEDS=1 \
+EVAL_EPISODES=1 \
+EVAL_STEPS=5 \
+BASELINE_POLICIES=horizon2 \
+scripts/run_v11_full_paper_suite.sh
+```
+
+The dry run is only for script verification; do not use its numbers in the paper.
 
 ## Training Command
 
@@ -369,7 +439,13 @@ python3 -m py_compile \
   coverage_schemes/scheme_d_paper_base/run_matrix.py \
   coverage_schemes/scheme_d_paper_base/checkpoint_sweep.py \
   coverage_schemes/scheme_d_paper_base/run_training_suite.py \
-  coverage_schemes/scheme_d_paper_base/config.py
+  coverage_schemes/scheme_d_paper_base/config.py \
+  coverage_schemes/scheme_d_paper_base/collect_eval_summaries.py
+
+bash -n \
+  scripts/eval_v11_real_time_quick.sh \
+  scripts/train_v11_ablation_commands.sh \
+  scripts/run_v11_full_paper_suite.sh
 
 .venv/bin/python -m coverage_schemes.scheme_d_paper_base.run_training_suite \
   --methods thermal_lstm_spawnhist_latency_v11_no_pred,thermal_lstm_spawnhist_latency_v11_no_carry,thermal_lstm_spawnhist_latency_v11_no_latency_reward,thermal_lstm_spawnhist_latency_v11_no_attention,thermal_lstm_spawnhist_latency_v11_no_residual \
@@ -386,6 +462,8 @@ python3 -m py_compile \
   --demo-mode \
   --output-dir runs/smoke/v11_decision_dt_eval
 ```
+
+The one-command suite was smoke-tested with a 5-step, one-seed evaluation-only run that generated both `combined_summary.csv` and `paper_summary.csv`.
 
 ## How To Judge V11
 

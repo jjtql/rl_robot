@@ -130,6 +130,8 @@ Implemented in:
 - `scripts/eval_v11_latency_quick.sh`
 - `scripts/train_v11_ablation_commands.sh`
 - `scripts/eval_v11_real_time_quick.sh`
+- `scripts/run_v11_full_paper_suite.sh`
+- `coverage_schemes/scheme_d_paper_base/collect_eval_summaries.py`
 
 Extra v11 experiment support:
 
@@ -137,6 +139,37 @@ Extra v11 experiment support:
 - Use `--decision-dt-seconds 0.05` when reporting real high-level robot decision time.
 - CSV keeps both `sim_step_seconds` and `decision_dt_seconds`.
 - `coverage_schemes/scheme_d_paper_base/test.py` now uses `build_policy()` and checkpoint config, so the MuJoCo viewer path matches v11 residual PPO, burst/lull spawn, thermal context, and latency metrics.
+- `scripts/run_v11_full_paper_suite.sh` is the preferred one-command entry point for full paper experiments.
+
+One-command paper suite:
+
+```bash
+cd /Data2/jj/rl_robot
+scripts/run_v11_full_paper_suite.sh
+```
+
+Default suite behavior:
+
+- trains full v11 plus all v11 ablations,
+- uses seeds `0,1,2`,
+- runs two training jobs concurrently,
+- evaluates latest checkpoints for every PPO run,
+- evaluates `horizon2`, `dynamic_weighted`, and `planner_ensemble` baselines,
+- uses held-out eval seeds `100,101,102`,
+- uses `multi_low,multi_realistic,multi_hard,multi_extreme`,
+- uses 3200-step demo-mode windows,
+- reports real high-level control time with `DECISION_DT_SECONDS=0.05`,
+- writes `combined_summary.csv` and `paper_summary.csv`.
+
+Useful suite switches:
+
+```bash
+TRAIN_JOBS=3 scripts/run_v11_full_paper_suite.sh
+SKIP_TRAIN=1 RUN_DIR=runs/v11_paper_suite/train scripts/run_v11_full_paper_suite.sh
+SKIP_EVAL=1 scripts/run_v11_full_paper_suite.sh
+RUN_SIM_TIME_EVAL=1 scripts/run_v11_full_paper_suite.sh
+RUN_CHECKPOINT_SWEEP=1 scripts/run_v11_full_paper_suite.sh
+```
 
 Latest completed v11 training:
 
@@ -218,14 +251,14 @@ Smoke verification already passed:
 - CPU smoke train through BC, rollout, PPO update, checkpoint save
 - smoke CSV showed phase-aware counters and effective beta working
 
-Latest pushed commit:
-
-```text
-47b11f2 Add phase-aware residual glue for RL robot
-origin/main
-```
-
 ## Commands
+
+Run full v11 paper suite:
+
+```bash
+cd /Data2/jj/rl_robot
+scripts/run_v11_full_paper_suite.sh
+```
 
 Train v11 two seeds:
 
