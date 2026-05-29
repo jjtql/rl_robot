@@ -903,6 +903,20 @@ def _replace_flag_value(items, flag, value):
     return out
 
 
+def _set_flag_value(items, flag, value):
+    out = _replace_flag_value(items, flag, value)
+    if flag not in items:
+        out.extend([flag, str(value)])
+    return out
+
+
+def _set_flag_values(items, pairs):
+    out = list(items)
+    for flag, value in pairs:
+        out = _set_flag_value(out, flag, value)
+    return out
+
+
 def _drop_flags(items, flags=(), value_flags=()):
     flags = set(flags)
     value_flags = set(value_flags)
@@ -921,6 +935,33 @@ def _drop_flags(items, flags=(), value_flags=()):
 
 
 _V11 = METHODS["thermal_lstm_spawnhist_latency_v11"]
+_V12_FAST = _set_flag_values(
+    _V11,
+    (
+        ("--decision-dt-seconds", "0.05"),
+        ("--response-sla-seconds", "4.0"),
+        ("--response-sla-steps", "80"),
+        ("--cover-latency-penalty-gain", "30.0"),
+        ("--oldest-active-penalty-gain", "0.45"),
+        ("--backlog-penalty-gain", "0.20"),
+        ("--response-sla-bonus", "20.0"),
+        ("--response-sla-miss-penalty", "30.0"),
+        ("--cover-reward-scale", "0.70"),
+        ("--quick-cover-bonus-scale", "3.00"),
+        ("--active-steam-penalty-scale", "2.40"),
+        ("--age-penalty-scale", "2.80"),
+        ("--residual-beta", "0.20"),
+        ("--residual-beta-start", "0.03"),
+        ("--residual-beta-end", "0.20"),
+        ("--residual-beta-warmup-steps", "700000"),
+        ("--residual-sparse-beta-scale", "1.25"),
+        ("--residual-lull-beta-scale", "1.35"),
+        ("--residual-charging-beta-scale", "1.00"),
+        ("--residual-dense-beta-scale", "0.40"),
+        ("--residual-burst-beta-scale", "0.25"),
+        ("--stagnation-recovery-steps", "90"),
+    ),
+)
 METHODS.update({
     "thermal_lstm_spawnhist_latency_v11_no_pred": _replace_flag_value(
         _replace_flag_value(_V11, "--pred-coef", "0.0"),
@@ -947,6 +988,52 @@ METHODS.update({
     ),
     "thermal_lstm_spawnhist_latency_v11_no_residual": _drop_flags(
         _V11,
+        flags=("--residual-policy", "--residual-action-shield"),
+        value_flags=(
+            "--residual-base-policy",
+            "--residual-glue",
+            "--residual-sparse-base-policy",
+            "--residual-dense-base-policy",
+            "--residual-phase-sparse-threshold",
+            "--residual-phase-dense-threshold",
+            "--residual-sparse-beta-scale",
+            "--residual-lull-beta-scale",
+            "--residual-charging-beta-scale",
+            "--residual-dense-beta-scale",
+            "--residual-burst-beta-scale",
+            "--stagnation-recovery-steps",
+            "--residual-beta",
+            "--residual-beta-start",
+            "--residual-beta-end",
+            "--residual-beta-warmup-steps",
+        ),
+    ),
+    "thermal_lstm_spawnhist_latency_v12_fast": _V12_FAST,
+    "thermal_lstm_spawnhist_latency_v12_fast_no_pred": _replace_flag_value(
+        _replace_flag_value(_V12_FAST, "--pred-coef", "0.0"),
+        "--prediction-horizon-steps",
+        "0",
+    ),
+    "thermal_lstm_spawnhist_latency_v12_fast_no_carry": _replace_flag_value(
+        _replace_flag_value(
+            _drop_flags(_V12_FAST, flags=("--carry-lstm-state-across-chunks",)),
+            "--continuous-session-chunks",
+            "1",
+        ),
+        "--lstm-sequence-chunks",
+        "1",
+    ),
+    "thermal_lstm_spawnhist_latency_v12_fast_no_latency_reward": _drop_flags(
+        _V12_FAST,
+        flags=("--latency-first-reward",),
+    ),
+    "thermal_lstm_spawnhist_latency_v12_fast_no_attention": _drop_flags(
+        _V12_FAST,
+        flags=("--steam-attention",),
+        value_flags=("--attention-steam-count",),
+    ),
+    "thermal_lstm_spawnhist_latency_v12_fast_no_residual": _drop_flags(
+        _V12_FAST,
         flags=("--residual-policy", "--residual-action-shield"),
         value_flags=(
             "--residual-base-policy",
@@ -1024,7 +1111,9 @@ def build_arg_parser():
     parser.add_argument("--cover-latency-penalty-gain", type=float)
     parser.add_argument("--oldest-active-penalty-gain", type=float)
     parser.add_argument("--backlog-penalty-gain", type=float)
+    parser.add_argument("--decision-dt-seconds", type=float)
     parser.add_argument("--response-sla-steps", type=int)
+    parser.add_argument("--response-sla-seconds", type=float)
     parser.add_argument("--response-sla-bonus", type=float)
     parser.add_argument("--response-sla-miss-penalty", type=float)
     parser.add_argument("--continuous-session-chunks", type=int)
@@ -1116,7 +1205,9 @@ def command_for(args, method, seed):
         ("cover_latency_penalty_gain", "--cover-latency-penalty-gain"),
         ("oldest_active_penalty_gain", "--oldest-active-penalty-gain"),
         ("backlog_penalty_gain", "--backlog-penalty-gain"),
+        ("decision_dt_seconds", "--decision-dt-seconds"),
         ("response_sla_steps", "--response-sla-steps"),
+        ("response_sla_seconds", "--response-sla-seconds"),
         ("response_sla_bonus", "--response-sla-bonus"),
         ("response_sla_miss_penalty", "--response-sla-miss-penalty"),
         ("continuous_session_chunks", "--continuous-session-chunks"),

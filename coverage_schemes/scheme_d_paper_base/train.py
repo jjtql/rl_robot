@@ -249,10 +249,12 @@ def build_arg_parser():
     parser.add_argument("--no-material-observation", action="store_true", help="Zero material and material-risk observation features.")
     parser.add_argument("--no-action-smoothing-penalty", action="store_true", help="Disable action delta/L2 reward penalty.")
     parser.add_argument("--latency-first-reward", action="store_true", help="Prioritize response latency, SLA, and backlog in reward shaping.")
+    parser.add_argument("--decision-dt-seconds", type=float, help="Real high-level control period used for training-time latency/SLA metrics.")
     parser.add_argument("--cover-latency-penalty-gain", type=float, help="Per-cover latency penalty gain used by --latency-first-reward.")
     parser.add_argument("--oldest-active-penalty-gain", type=float, help="Per-step penalty for the oldest active steam age.")
     parser.add_argument("--backlog-penalty-gain", type=float, help="Per-step penalty for active steam backlog.")
     parser.add_argument("--response-sla-steps", type=int, help="Latency target in simulator steps for response-speed metrics and reward.")
+    parser.add_argument("--response-sla-seconds", type=float, help="Latency target in real high-level control seconds; converted to steps using --decision-dt-seconds.")
     parser.add_argument("--response-sla-bonus", type=float, help="Bonus for covering before response SLA.")
     parser.add_argument("--response-sla-miss-penalty", type=float, help="Penalty for covering after response SLA.")
     parser.add_argument("--continuous-session-chunks", type=int, help="Number of episode windows kept inside one physical session.")
@@ -387,7 +389,9 @@ def apply_cli_overrides(config, args):
         "cover_latency_penalty_gain",
         "oldest_active_penalty_gain",
         "backlog_penalty_gain",
+        "decision_dt_seconds",
         "response_sla_steps",
+        "response_sla_seconds",
         "response_sla_bonus",
         "response_sla_miss_penalty",
         "continuous_session_chunks",
@@ -503,6 +507,14 @@ def configure_env_from_config(env, config):
     env.oldest_active_penalty_gain = float(config.get("oldest_active_penalty_gain", env.oldest_active_penalty_gain))
     env.backlog_penalty_gain = float(config.get("backlog_penalty_gain", env.backlog_penalty_gain))
     env.response_sla_steps = int(config.get("response_sla_steps", env.response_sla_steps))
+    env.configure_response_timing(
+        decision_dt_seconds=config.get("decision_dt_seconds"),
+        response_sla_seconds=config.get("response_sla_seconds"),
+        response_sla_steps=env.response_sla_steps,
+    )
+    config["response_sla_steps"] = int(env.response_sla_steps)
+    config["response_sla_seconds"] = float(env.response_sla_seconds)
+    config["decision_dt_seconds"] = float(env.metric_step_seconds)
     env.response_sla_bonus = float(config.get("response_sla_bonus", env.response_sla_bonus))
     env.response_sla_miss_penalty = float(config.get("response_sla_miss_penalty", env.response_sla_miss_penalty))
     env.action_delay_steps = int(config.get("action_delay_steps", 0))
@@ -778,7 +790,8 @@ def train(config, run_path):
                 f"(schedule {config.get('residual_beta_start')} -> {config.get('residual_beta_end')} "
                 f"over {config.get('residual_beta_warmup_steps', 0)} steps)\n"
                 f"Latency-first reward: {env.latency_first_reward_enabled} "
-                f"(sla={env.response_sla_steps}, latency_gain={env.cover_latency_penalty_gain}, "
+                f"(sla={env.response_sla_steps} steps/{env.response_sla_seconds:.2f}s, "
+                f"dt={env.metric_step_seconds:.3f}s, latency_gain={env.cover_latency_penalty_gain}, "
                 f"oldest_gain={env.oldest_active_penalty_gain}, backlog_gain={env.backlog_penalty_gain})\n"
                 f"Continuous session chunks: {config.get('continuous_session_chunks', 1)} "
                 f"(carry_lstm={config.get('carry_lstm_state_across_chunks', False)}, "
@@ -986,20 +999,31 @@ def train(config, run_path):
                     "success_count": int(info.get("success_count", 0)),
                     "spawned_count": int(ep_spawned),
                     "missed_count": int(info.get("missed_count", 0)),
+                    "sim_step_seconds": float(info.get("sim_step_seconds", 0.0)),
+                    "decision_dt_seconds": float(info.get("decision_dt_seconds", 0.0)),
                     "cover_latency": float(info.get("cover_latency", 0.0)),
+                    "cover_latency_seconds": float(info.get("cover_latency_seconds", 0.0)),
                     "last_cover_latency": float(info.get("last_cover_latency", 0.0)),
+                    "last_cover_latency_seconds": float(info.get("last_cover_latency_seconds", 0.0)),
                     "cover_latency_p50": float(info.get("cover_latency_p50", 0.0)),
+                    "cover_latency_p50_seconds": float(info.get("cover_latency_p50_seconds", 0.0)),
                     "cover_latency_p90": float(info.get("cover_latency_p90", 0.0)),
+                    "cover_latency_p90_seconds": float(info.get("cover_latency_p90_seconds", 0.0)),
                     "cover_latency_p95": float(info.get("cover_latency_p95", 0.0)),
+                    "cover_latency_p95_seconds": float(info.get("cover_latency_p95_seconds", 0.0)),
                     "cover_latency_max": float(info.get("cover_latency_max", 0.0)),
+                    "cover_latency_max_seconds": float(info.get("cover_latency_max_seconds", 0.0)),
                     "response_sla_steps": int(info.get("response_sla_steps", 0)),
+                    "response_sla_seconds": float(info.get("response_sla_seconds", 0.0)),
                     "response_sla_success_count": int(info.get("response_sla_success_count", 0)),
                     "response_sla_miss_count": int(info.get("response_sla_miss_count", 0)),
                     "response_sla_success_rate": float(info.get("response_sla_success_rate", 0.0)),
                     "active_steam_mean": float(info.get("active_steam_mean", 0.0)),
                     "active_steam_max": int(info.get("active_steam_max", 0)),
                     "oldest_active_age": float(info.get("oldest_active_age", 0.0)),
+                    "oldest_active_age_seconds": float(info.get("oldest_active_age_seconds", 0.0)),
                     "oldest_active_age_max": float(info.get("oldest_active_age_max", 0.0)),
+                    "oldest_active_age_max_seconds": float(info.get("oldest_active_age_max_seconds", 0.0)),
                     "target_distance": float(info.get("target_distance", 0.0)),
                     "target_selector": str(info.get("target_selector", "")),
                     "selected_target_id": int(info.get("selected_target_id", -1)),
@@ -1116,8 +1140,8 @@ def train(config, run_path):
                         f"R:{ep_r:.1f} | Smooth:{smooth_reward:.1f} | "
                         f"Cov:{ep_coverage:.2f} ({info.get('success_count', ep_covered)}/{ep_spawned}) | "
                         f"Dist:{info.get('target_distance', 0):.3f} | "
-                        f"Lat:{info.get('cover_latency', 0):.0f} "
-                        f"P90:{info.get('cover_latency_p90', 0):.0f} "
+                        f"Lat:{info.get('cover_latency_seconds', 0):.2f}s "
+                        f"P90:{info.get('cover_latency_p90_seconds', 0):.2f}s "
                         f"SLA:{info.get('response_sla_success_rate', 0):.2f}",
                         flush=True,
                     )

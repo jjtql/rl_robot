@@ -43,6 +43,7 @@ DEFAULT_CONFIG = {
     "action_smoothing_penalty": True,
     "latency_first_reward": False,
     "decision_dt_seconds": None,
+    "response_sla_seconds": None,
     "cover_latency_penalty_gain": 14.0,
     "oldest_active_penalty_gain": 0.08,
     "backlog_penalty_gain": 0.04,

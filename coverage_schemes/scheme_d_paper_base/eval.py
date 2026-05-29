@@ -71,6 +71,11 @@ def configure_env_from_config(env, config):
     env.oldest_active_penalty_gain = float(config.get("oldest_active_penalty_gain", env.oldest_active_penalty_gain))
     env.backlog_penalty_gain = float(config.get("backlog_penalty_gain", env.backlog_penalty_gain))
     env.response_sla_steps = int(config.get("response_sla_steps", env.response_sla_steps))
+    env.configure_response_timing(
+        decision_dt_seconds=config.get("decision_dt_seconds"),
+        response_sla_seconds=config.get("response_sla_seconds"),
+        response_sla_steps=env.response_sla_steps,
+    )
     env.response_sla_bonus = float(config.get("response_sla_bonus", env.response_sla_bonus))
     env.response_sla_miss_penalty = float(config.get("response_sla_miss_penalty", env.response_sla_miss_penalty))
     env.action_delay_steps = int(config.get("action_delay_steps", 0))
@@ -136,6 +141,7 @@ def build_arg_parser():
     parser.add_argument("--target-selector", choices=["nearest", "risk_aware"], help="Target features/reward-shaping selector.")
     parser.add_argument("--max-steams", type=int, help="Override active steam capacity after curriculum configuration.")
     parser.add_argument("--decision-dt-seconds", type=float, help="Real high-level control period used to report time metrics.")
+    parser.add_argument("--response-sla-seconds", type=float, help="Override response SLA in real high-level control seconds.")
     parser.add_argument("--stochastic", action="store_true")
     parser.add_argument("--demo-mode", action="store_true", help="Keep spawning after success instead of normal termination.")
     return parser
@@ -307,6 +313,8 @@ def main():
         config["target_selector"] = args.target_selector
     if args.decision_dt_seconds is not None:
         config["decision_dt_seconds"] = args.decision_dt_seconds
+    if args.response_sla_seconds is not None:
+        config["response_sla_seconds"] = args.response_sla_seconds
     set_global_seeds(args.seed)
 
     env = ShangZengEnv(

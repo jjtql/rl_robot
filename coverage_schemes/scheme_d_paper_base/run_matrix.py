@@ -28,6 +28,7 @@ def build_arg_parser():
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--steps", type=int, default=800)
     parser.add_argument("--decision-dt-seconds", type=float, help="Real high-level control period used to report time metrics.")
+    parser.add_argument("--response-sla-seconds", type=float, help="Override response SLA in real high-level control seconds.")
     parser.add_argument("--output-dir", default="runs/matrix")
     parser.add_argument("--stochastic", action="store_true")
     parser.add_argument("--demo-mode", action="store_true")
@@ -95,6 +96,8 @@ def main():
         config["target_selector"] = args.target_selector
     if args.decision_dt_seconds is not None:
         config["decision_dt_seconds"] = args.decision_dt_seconds
+    if args.response_sla_seconds is not None:
+        config["response_sla_seconds"] = args.response_sla_seconds
 
     policies = parse_csv_list(args.policies)
     if "ppo" in policies and not args.model:

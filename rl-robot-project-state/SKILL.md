@@ -131,6 +131,7 @@ Implemented in:
 - `scripts/train_v11_ablation_commands.sh`
 - `scripts/eval_v11_real_time_quick.sh`
 - `scripts/run_v11_full_paper_suite.sh`
+- `scripts/run_v12_fast_paper_suite.sh`
 - `coverage_schemes/scheme_d_paper_base/collect_eval_summaries.py`
 
 Extra v11 experiment support:
@@ -138,10 +139,47 @@ Extra v11 experiment support:
 - `eval.py`, `run_matrix.py`, and `checkpoint_sweep.py` support `--decision-dt-seconds`.
 - Use `--decision-dt-seconds 0.05` when reporting real high-level robot decision time.
 - CSV keeps both `sim_step_seconds` and `decision_dt_seconds`.
+- Training now supports `--response-sla-seconds`, which converts a real SLA target into internal steps using `--decision-dt-seconds`.
+- Training CSV logs second-based latency fields such as `cover_latency_seconds`, `cover_latency_p90_seconds`, `response_sla_seconds`, and `oldest_active_age_max_seconds`.
 - `coverage_schemes/scheme_d_paper_base/test.py` now uses `build_policy()` and checkpoint config, so the MuJoCo viewer path matches v11 residual PPO, burst/lull spawn, thermal context, and latency metrics.
-- `scripts/run_v11_full_paper_suite.sh` is the preferred one-command entry point for full paper experiments.
+- `scripts/run_v11_full_paper_suite.sh` is the conservative v11 one-command entry point.
+- `scripts/run_v12_fast_paper_suite.sh` is the preferred final one-command entry point after the real-time SLA update.
 
-One-command paper suite:
+Current fast-response candidate:
+
+- `thermal_lstm_spawnhist_latency_v12_fast`
+- Same LSTM-PPO core and same horizon2 residual base as v11.
+- Adds real-time training semantics:
+  - `decision_dt_seconds=0.05`
+  - `response_sla_seconds=4.0`
+  - internal `response_sla_steps=80`
+- Stronger speed pressure:
+  - `cover_latency_penalty_gain=30.0`
+  - `response_sla_bonus=20.0`
+  - `response_sla_miss_penalty=30.0`
+  - `oldest_active_penalty_gain=0.45`
+  - `backlog_penalty_gain=0.20`
+  - `quick_cover_bonus_scale=3.00`
+- More conservative residual during dense/burst phases:
+  - `residual_beta_end=0.20`
+  - `residual_dense_beta_scale=0.40`
+  - `residual_burst_beta_scale=0.25`
+  - `stagnation_recovery_steps=90`
+- V12-fast ablations:
+  - `thermal_lstm_spawnhist_latency_v12_fast_no_pred`
+  - `thermal_lstm_spawnhist_latency_v12_fast_no_carry`
+  - `thermal_lstm_spawnhist_latency_v12_fast_no_latency_reward`
+  - `thermal_lstm_spawnhist_latency_v12_fast_no_attention`
+  - `thermal_lstm_spawnhist_latency_v12_fast_no_residual`
+
+Preferred final run:
+
+```bash
+cd /Data2/jj/rl_robot
+scripts/run_v12_fast_paper_suite.sh
+```
+
+Conservative v11 paper suite:
 
 ```bash
 cd /Data2/jj/rl_robot
@@ -161,14 +199,15 @@ Default suite behavior:
 - reports real high-level control time with `DECISION_DT_SECONDS=0.05`,
 - writes `combined_summary.csv` and `paper_summary.csv`.
 
-Useful suite switches:
+Useful suite switches also work through `scripts/run_v12_fast_paper_suite.sh`:
 
 ```bash
-TRAIN_JOBS=3 scripts/run_v11_full_paper_suite.sh
-SKIP_TRAIN=1 RUN_DIR=runs/v11_paper_suite/train scripts/run_v11_full_paper_suite.sh
-SKIP_EVAL=1 scripts/run_v11_full_paper_suite.sh
-RUN_SIM_TIME_EVAL=1 scripts/run_v11_full_paper_suite.sh
-RUN_CHECKPOINT_SWEEP=1 scripts/run_v11_full_paper_suite.sh
+TRAIN_JOBS=3 scripts/run_v12_fast_paper_suite.sh
+SKIP_TRAIN=1 RUN_DIR=runs/v12_fast_paper_suite/train scripts/run_v12_fast_paper_suite.sh
+SKIP_EVAL=1 scripts/run_v12_fast_paper_suite.sh
+RUN_SIM_TIME_EVAL=1 scripts/run_v12_fast_paper_suite.sh
+RUN_SIM_TIME_EVAL=1 SIM_DT_SECONDS=0.002 scripts/run_v12_fast_paper_suite.sh
+RUN_CHECKPOINT_SWEEP=1 scripts/run_v12_fast_paper_suite.sh
 ```
 
 Latest completed v11 training:
@@ -253,7 +292,14 @@ Smoke verification already passed:
 
 ## Commands
 
-Run full v11 paper suite:
+Run final v12-fast paper suite:
+
+```bash
+cd /Data2/jj/rl_robot
+scripts/run_v12_fast_paper_suite.sh
+```
+
+Run conservative v11 paper suite:
 
 ```bash
 cd /Data2/jj/rl_robot

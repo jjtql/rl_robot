@@ -2,6 +2,7 @@
 set -euo pipefail
 
 PYTHON="${PYTHON:-.venv/bin/python}"
+SUITE_LABEL="${SUITE_LABEL:-V11 full paper suite}"
 METHODS="${METHODS:-thermal_lstm_spawnhist_latency_v11,thermal_lstm_spawnhist_latency_v11_no_pred,thermal_lstm_spawnhist_latency_v11_no_carry,thermal_lstm_spawnhist_latency_v11_no_latency_reward,thermal_lstm_spawnhist_latency_v11_no_attention,thermal_lstm_spawnhist_latency_v11_no_residual}"
 SEEDS="${SEEDS:-0,1,2}"
 TRAIN_JOBS="${TRAIN_JOBS:-2}"
@@ -12,6 +13,7 @@ EVAL_SEEDS="${EVAL_SEEDS:-100,101,102}"
 EVAL_EPISODES="${EVAL_EPISODES:-3}"
 EVAL_STEPS="${EVAL_STEPS:-3200}"
 DECISION_DT_SECONDS="${DECISION_DT_SECONDS:-0.05}"
+SIM_DT_SECONDS="${SIM_DT_SECONDS:-0.002}"
 BASELINE_POLICIES="${BASELINE_POLICIES:-horizon2,dynamic_weighted,planner_ensemble}"
 
 SKIP_TRAIN="${SKIP_TRAIN:-0}"
@@ -43,7 +45,7 @@ csv_to_array() {
 }
 
 print_config() {
-  echo "=== V11 full paper suite ==="
+  echo "=== $SUITE_LABEL ==="
   echo "methods:              $(normalize_csv "$METHODS")"
   echo "seeds:                $(normalize_csv "$SEEDS")"
   echo "train jobs:           $TRAIN_JOBS"
@@ -54,6 +56,7 @@ print_config() {
   echo "eval episodes:        $EVAL_EPISODES"
   echo "eval steps:           $EVAL_STEPS"
   echo "decision dt seconds:  $DECISION_DT_SECONDS"
+  echo "sim dt seconds:       $SIM_DT_SECONDS"
   echo "device:               $DEVICE"
   echo "run sim-time eval:    $RUN_SIM_TIME_EVAL"
   echo "run checkpoint sweep: $RUN_CHECKPOINT_SWEEP"
@@ -121,6 +124,8 @@ run_matrix() {
   )
   if [[ "$timebase" == "real_time" ]]; then
     command+=(--decision-dt-seconds "$DECISION_DT_SECONDS")
+  elif [[ "$timebase" == "sim_time" ]]; then
+    command+=(--decision-dt-seconds "$SIM_DT_SECONDS")
   fi
 
   echo

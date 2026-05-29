@@ -142,7 +142,58 @@ The phase-aware residual scales still give LSTM-PPO more freedom in sparse/lull 
 - `scripts/train_v11_ablation_commands.sh`
 - `scripts/eval_v11_real_time_quick.sh`
 - `scripts/run_v11_full_paper_suite.sh`
+- `scripts/run_v12_fast_paper_suite.sh`
 - `rl-robot-project-state/SKILL.md`
+
+## Fast-Response V12
+
+Before the final paper run, use the fast-response preset instead of plain v11:
+
+```bash
+cd /Data2/jj/rl_robot
+scripts/run_v12_fast_paper_suite.sh
+```
+
+The v12-fast preset keeps the LSTM-PPO core and `horizon2` residual base, but changes the training objective to match real response time:
+
+- `decision_dt_seconds = 0.05`
+- `response_sla_seconds = 4.0`
+- internal SLA becomes `80` steps because `4.0 / 0.05 = 80`
+- training CSV logs both step metrics and second metrics
+- training console prints latency and p90 latency in seconds
+- oldest-active penalty is normalized by SLA instead of max steam age
+- latency/SLA reward pressure is stronger
+- dense/burst residual freedom is lower so PPO is less likely to slow down the strong visible-target planner
+
+V12-fast methods:
+
+| Method | Purpose |
+| --- | --- |
+| `thermal_lstm_spawnhist_latency_v12_fast` | Full fast-response method |
+| `thermal_lstm_spawnhist_latency_v12_fast_no_pred` | Remove auxiliary spawn prediction |
+| `thermal_lstm_spawnhist_latency_v12_fast_no_carry` | Remove continuous recurrent carry |
+| `thermal_lstm_spawnhist_latency_v12_fast_no_latency_reward` | Remove latency-first reward |
+| `thermal_lstm_spawnhist_latency_v12_fast_no_attention` | Remove steam attention |
+| `thermal_lstm_spawnhist_latency_v12_fast_no_residual` | Remove residual planner glue |
+
+Main changed settings relative to v11:
+
+```text
+decision_dt_seconds = 0.05
+response_sla_seconds = 4.0
+cover_latency_penalty_gain = 30.0
+response_sla_bonus = 20.0
+response_sla_miss_penalty = 30.0
+oldest_active_penalty_gain = 0.45
+backlog_penalty_gain = 0.20
+quick_cover_bonus_scale = 3.00
+residual_beta_end = 0.20
+residual_dense_beta_scale = 0.40
+residual_burst_beta_scale = 0.25
+stagnation_recovery_steps = 90
+```
+
+Use v11 as the conservative baseline and v12-fast as the final candidate. If v12-fast improves SLA/p90 without destroying coverage, use it as the paper's main method. If it hurts coverage too much, report it as a latency-pressure ablation and keep v11 as the main method.
 
 ## One-Command Paper Suite
 
@@ -151,6 +202,13 @@ Use this as the main paper experiment entry point:
 ```bash
 cd /Data2/jj/rl_robot
 scripts/run_v11_full_paper_suite.sh
+```
+
+For the final run after the real-time training update, prefer:
+
+```bash
+cd /Data2/jj/rl_robot
+scripts/run_v12_fast_paper_suite.sh
 ```
 
 By default this runs:
@@ -178,19 +236,22 @@ Common variants:
 
 ```bash
 # More or fewer parallel training jobs.
-TRAIN_JOBS=3 scripts/run_v11_full_paper_suite.sh
+TRAIN_JOBS=3 scripts/run_v12_fast_paper_suite.sh
 
 # Only evaluate existing runs, no training.
-SKIP_TRAIN=1 RUN_DIR=runs/v11_paper_suite/train scripts/run_v11_full_paper_suite.sh
+SKIP_TRAIN=1 RUN_DIR=runs/v12_fast_paper_suite/train scripts/run_v12_fast_paper_suite.sh
 
 # Train only.
-SKIP_EVAL=1 scripts/run_v11_full_paper_suite.sh
+SKIP_EVAL=1 scripts/run_v12_fast_paper_suite.sh
 
 # Include simulator-time tables in addition to real decision-time tables.
-RUN_SIM_TIME_EVAL=1 scripts/run_v11_full_paper_suite.sh
+RUN_SIM_TIME_EVAL=1 scripts/run_v12_fast_paper_suite.sh
 
-# Also sweep saved checkpoints for the full v11 method.
-RUN_CHECKPOINT_SWEEP=1 scripts/run_v11_full_paper_suite.sh
+# Override the simulator-time reporting step if the XML timestep changes.
+RUN_SIM_TIME_EVAL=1 SIM_DT_SECONDS=0.002 scripts/run_v12_fast_paper_suite.sh
+
+# Also sweep saved checkpoints for the full v12-fast method.
+RUN_CHECKPOINT_SWEEP=1 scripts/run_v12_fast_paper_suite.sh
 ```
 
 For a cheaper dry run:
@@ -445,7 +506,8 @@ python3 -m py_compile \
 bash -n \
   scripts/eval_v11_real_time_quick.sh \
   scripts/train_v11_ablation_commands.sh \
-  scripts/run_v11_full_paper_suite.sh
+  scripts/run_v11_full_paper_suite.sh \
+  scripts/run_v12_fast_paper_suite.sh
 
 .venv/bin/python -m coverage_schemes.scheme_d_paper_base.run_training_suite \
   --methods thermal_lstm_spawnhist_latency_v11_no_pred,thermal_lstm_spawnhist_latency_v11_no_carry,thermal_lstm_spawnhist_latency_v11_no_latency_reward,thermal_lstm_spawnhist_latency_v11_no_attention,thermal_lstm_spawnhist_latency_v11_no_residual \
@@ -465,9 +527,16 @@ bash -n \
 
 The one-command suite was smoke-tested with a 5-step, one-seed evaluation-only run that generated both `combined_summary.csv` and `paper_summary.csv`.
 
-## How To Judge V11
+The v12-fast timebase update was smoke-tested with:
 
-For v11, report results in this order:
+- command generation for all six v12-fast methods,
+- an 8-step CPU train using `response_sla_seconds=4.0`,
+- verification that the saved config contains `decision_dt_seconds=0.05`, `response_sla_seconds=4.0`, and `response_sla_steps=80`,
+- a 5-step wrapper eval through `scripts/run_v12_fast_paper_suite.sh`.
+
+## How To Judge V11/V12
+
+For v11/v12, report results in this order:
 
 1. `response_sla_success_rate`
 2. `cover_latency_p90_seconds`

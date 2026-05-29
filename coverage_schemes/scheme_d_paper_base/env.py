@@ -74,6 +74,8 @@ class ShangZengEnv(gym.Env):
         self.model = mujoco.MjModel.from_xml_path(str(model_path))
         self.data = mujoco.MjData(self.model)
         self.model_path = str(model_path)
+        self.sim_step_seconds = self._resolve_model_step_seconds()
+        self.metric_step_seconds = self.sim_step_seconds
 
         self.max_episode_steps = max_episode_steps
         self.pot_origin = np.array([1.8, 0.0, 0.0], dtype=np.float32)
@@ -168,6 +170,7 @@ class ShangZengEnv(gym.Env):
         self.oldest_active_penalty_gain = 0.08
         self.backlog_penalty_gain = 0.04
         self.response_sla_steps = 120
+        self.response_sla_seconds = float(self.response_sla_steps) * float(self.metric_step_seconds)
         self.response_sla_bonus = 6.0
         self.response_sla_miss_penalty = 8.0
         self.cover_reward_scale = 1.0
@@ -239,6 +242,40 @@ class ShangZengEnv(gym.Env):
         self._cache_material_geoms()
         self._cache_steam_sites()
         self.configure_curriculum("single_easy")
+
+    def _resolve_model_step_seconds(self):
+        try:
+            step_seconds = float(self.model.opt.timestep)
+        except (AttributeError, TypeError, ValueError):
+            step_seconds = 1.0
+        return step_seconds if step_seconds > 0.0 else 1.0
+
+    def configure_response_timing(self, decision_dt_seconds=None, response_sla_seconds=None, response_sla_steps=None):
+        self.sim_step_seconds = self._resolve_model_step_seconds()
+        metric_step_seconds = self.sim_step_seconds
+        if decision_dt_seconds is not None:
+            try:
+                candidate = float(decision_dt_seconds)
+            except (TypeError, ValueError):
+                candidate = 0.0
+            if candidate > 0.0:
+                metric_step_seconds = candidate
+        self.metric_step_seconds = float(metric_step_seconds)
+
+        if response_sla_steps is not None:
+            self.response_sla_steps = max(int(response_sla_steps), 1)
+
+        if response_sla_seconds is not None:
+            try:
+                seconds = float(response_sla_seconds)
+            except (TypeError, ValueError):
+                seconds = 0.0
+            if seconds > 0.0:
+                self.response_sla_seconds = seconds
+                self.response_sla_steps = max(int(round(seconds / max(self.metric_step_seconds, 1e-9))), 1)
+                return
+
+        self.response_sla_seconds = float(self.response_sla_steps) * float(self.metric_step_seconds)
 
     def refresh_observation_space(self):
         if int(self.attention_steam_dim) != 8:
@@ -1203,7 +1240,7 @@ class ShangZengEnv(gym.Env):
             terms["age"] = -self.age_penalty_gain * age_ratio
             if self.latency_first_reward_enabled:
                 oldest_age = float(max(ages))
-                oldest_ratio = min(oldest_age / max(self.max_steam_age, 1), 2.0)
+                oldest_ratio = min(oldest_age / max(int(self.response_sla_steps), 1), 2.0)
                 backlog_ratio = min(len(self.steams) / max(self.max_steams, 1), 2.0)
                 terms["oldest_active"] = -self.oldest_active_penalty_gain * oldest_ratio
                 terms["backlog"] = -self.backlog_penalty_gain * backlog_ratio
@@ -1708,22 +1745,43 @@ class ShangZengEnv(gym.Env):
                 selected_target["selected_target_y"],
             ], dtype=np.float32)
         route_summary = self._route_summary_values(target_xy)
+        metric_step_seconds = float(getattr(self, "metric_step_seconds", 1.0))
+        sim_step_seconds = float(getattr(self, "sim_step_seconds", metric_step_seconds))
+        cover_latency = float(self.average_cover_latency)
+        last_cover_latency = float(self.last_cover_latency)
+        cover_latency_p50 = float(self.cover_latency_percentile(50))
+        cover_latency_p90 = float(self.cover_latency_percentile(90))
+        cover_latency_p95 = float(self.cover_latency_percentile(95))
+        cover_latency_max = float(max(self.cover_latencies) if self.cover_latencies else 0.0)
+        oldest_active_age = float(max([steam["age"] for steam in self.steams], default=0.0))
         return {
             "coverage_rate": float(self.coverage_rate),
-            "cover_latency": float(self.average_cover_latency),
-            "last_cover_latency": float(self.last_cover_latency),
-            "cover_latency_p50": float(self.cover_latency_percentile(50)),
-            "cover_latency_p90": float(self.cover_latency_percentile(90)),
-            "cover_latency_p95": float(self.cover_latency_percentile(95)),
-            "cover_latency_max": float(max(self.cover_latencies) if self.cover_latencies else 0.0),
+            "sim_step_seconds": sim_step_seconds,
+            "decision_dt_seconds": metric_step_seconds,
+            "metric_step_seconds": metric_step_seconds,
+            "cover_latency": cover_latency,
+            "last_cover_latency": last_cover_latency,
+            "cover_latency_p50": cover_latency_p50,
+            "cover_latency_p90": cover_latency_p90,
+            "cover_latency_p95": cover_latency_p95,
+            "cover_latency_max": cover_latency_max,
+            "cover_latency_seconds": cover_latency * metric_step_seconds,
+            "last_cover_latency_seconds": last_cover_latency * metric_step_seconds,
+            "cover_latency_p50_seconds": cover_latency_p50 * metric_step_seconds,
+            "cover_latency_p90_seconds": cover_latency_p90 * metric_step_seconds,
+            "cover_latency_p95_seconds": cover_latency_p95 * metric_step_seconds,
+            "cover_latency_max_seconds": cover_latency_max * metric_step_seconds,
             "response_sla_steps": int(self.response_sla_steps),
+            "response_sla_seconds": float(getattr(self, "response_sla_seconds", 0.0)),
             "response_sla_success_count": int(self.response_sla_success_count),
             "response_sla_miss_count": int(self.response_sla_miss_count),
             "response_sla_success_rate": float(self.response_sla_success_rate),
             "active_steam_mean": float(self.active_steam_mean),
             "active_steam_max": int(self.active_steam_max),
-            "oldest_active_age": float(max([steam["age"] for steam in self.steams], default=0.0)),
+            "oldest_active_age": oldest_active_age,
+            "oldest_active_age_seconds": oldest_active_age * metric_step_seconds,
             "oldest_active_age_max": float(self.oldest_active_age_max),
+            "oldest_active_age_max_seconds": float(self.oldest_active_age_max) * metric_step_seconds,
             "ee_velocity": float(ee_velocity),
             "target_distance": float(target_distance),
             "target_selector": selected_target["target_selector"],
