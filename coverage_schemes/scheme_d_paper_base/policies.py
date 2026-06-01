@@ -102,15 +102,17 @@ class RecedingHorizonPolicy:
 
 
 class DeadlineHorizonPolicy:
-    def __init__(self, horizon=2):
+    def __init__(self, horizon=2, rescue=False):
         self.horizon = int(horizon)
-        self.name = f"deadline_horizon{self.horizon}_planner"
+        self.rescue = bool(rescue)
+        prefix = "deadline_rescue" if self.rescue else "deadline"
+        self.name = f"{prefix}_horizon{self.horizon}_planner"
 
     def reset(self):
         pass
 
     def act(self, env, obs):
-        steam = select_deadline_horizon_steam(env, horizon=self.horizon)
+        steam = select_deadline_horizon_steam(env, horizon=self.horizon, rescue=self.rescue)
         return action_toward_steam(env, steam)
 
 
@@ -304,7 +306,12 @@ def residual_beta_for_env(config, env, scheduled_beta):
         "mid": 1.0,
         "fixed": 1.0,
     }
-    return float(np.clip(float(scheduled_beta) * scale_by_mode.get(mode, 1.0), 0.0, 1.0))
+    beta = float(scheduled_beta) * scale_by_mode.get(mode, 1.0)
+    emergency_scale = float(config.get("residual_emergency_beta_scale", 1.0))
+    emergency_threshold = float(config.get("residual_emergency_age_ratio", 1.0))
+    if emergency_scale < 1.0 and max_deadline_arrival_ratio(env) >= emergency_threshold:
+        beta *= max(emergency_scale, 0.0)
+    return float(np.clip(beta, 0.0, 1.0))
 
 
 class PhaseAwareResidualBasePolicy:
@@ -451,6 +458,8 @@ def build_base_policy(kind):
         return RecedingHorizonPolicy(horizon=3)
     if kind == "deadline_horizon2":
         return DeadlineHorizonPolicy(horizon=2)
+    if kind == "deadline_rescue_horizon2":
+        return DeadlineHorizonPolicy(horizon=2, rescue=True)
     if kind == "aco_tsp":
         return AcoTspPolicy()
     if kind == "planner_ensemble":
@@ -764,12 +773,16 @@ def score_target_route(env, route):
     return float(total)
 
 
-def select_deadline_horizon_steam(env, horizon=2):
+def select_deadline_horizon_steam(env, horizon=2, rescue=False):
     if not env.steams:
         return None
     active = list(env.steams)
     if len(active) == 1:
         return active[0]
+    if rescue:
+        rescue_target = select_deadline_rescue_steam(env, active)
+        if rescue_target is not None:
+            return rescue_target
     horizon = max(1, min(int(horizon), len(active), 4))
     best_route = None
     best_score = -np.inf
@@ -779,6 +792,48 @@ def select_deadline_horizon_steam(env, horizon=2):
             best_score = score
             best_route = route
     return best_route[0] if best_route else max(active, key=lambda steam: steam["age"])
+
+
+def select_deadline_rescue_steam(env, active=None, threshold=0.65):
+    active = list(env.steams if active is None else active)
+    if not active:
+        return None
+    center = np.asarray(env.cover_center, dtype=np.float32)
+    sla_steps = max(int(getattr(env, "response_sla_steps", 0) or getattr(env, "max_steam_age", 1)), 1)
+    rescue_candidates = []
+    for steam in active:
+        xy = steam["pos"][:2]
+        dist = float(np.linalg.norm(xy - center))
+        travel_steps = max(1.0, np.ceil(max(dist - env.cover_radius, 0.0) / max(env.track_step_size, 1e-6)))
+        arrival_ratio = float((steam["age"] + travel_steps) / max(sla_steps, 1))
+        age_ratio = float(steam["age"] / max(sla_steps, 1))
+        travel_ratio = float(np.clip(travel_steps / max(sla_steps, 1), 0.0, 1.0))
+        if arrival_ratio < threshold and age_ratio < threshold:
+            continue
+        rescue_score = (
+            2.40 * min(arrival_ratio, 2.0)
+            + 1.10 * min(age_ratio, 2.0)
+            + 0.15 * thermal_score_at_xy(env, xy)
+            - 0.30 * travel_ratio
+        )
+        rescue_candidates.append((rescue_score, steam))
+    if not rescue_candidates:
+        return None
+    return max(rescue_candidates, key=lambda item: item[0])[1]
+
+
+def max_deadline_arrival_ratio(env):
+    if not getattr(env, "steams", None):
+        return 0.0
+    center = np.asarray(env.cover_center, dtype=np.float32)
+    sla_steps = max(int(getattr(env, "response_sla_steps", 0) or getattr(env, "max_steam_age", 1)), 1)
+    ratios = []
+    for steam in env.steams:
+        xy = steam["pos"][:2]
+        dist = float(np.linalg.norm(xy - center))
+        travel_steps = max(1.0, np.ceil(max(dist - env.cover_radius, 0.0) / max(env.track_step_size, 1e-6)))
+        ratios.append(float((steam["age"] + travel_steps) / max(sla_steps, 1)))
+    return max(ratios) if ratios else 0.0
 
 
 def score_deadline_target_route(env, route):
@@ -919,6 +974,7 @@ def build_policy(kind, env, model_path=None, deterministic=True, config_override
         "horizon2",
         "horizon3",
         "deadline_horizon2",
+        "deadline_rescue_horizon2",
         "aco_tsp",
         "planner_ensemble",
     ):

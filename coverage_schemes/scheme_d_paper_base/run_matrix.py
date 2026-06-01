@@ -22,7 +22,7 @@ def build_arg_parser():
     parser.add_argument("--device", help="PPO device override: auto, cpu, cuda, or cuda:N.")
     parser.add_argument("--target-selector", choices=["nearest", "risk_aware"], help="Target features/reward-shaping selector.")
     parser.add_argument("--max-steams", help="Comma-separated active steam capacities for generalization tests, e.g. 3,4,6.")
-    parser.add_argument("--policies", default="random,nearest,oldest,distance_age,risk_aware,dynamic_weighted,horizon2,horizon3,deadline_horizon2,aco_tsp,planner_ensemble,ppo")
+    parser.add_argument("--policies", default="random,nearest,oldest,distance_age,risk_aware,dynamic_weighted,horizon2,horizon3,deadline_horizon2,deadline_rescue_horizon2,aco_tsp,planner_ensemble,ppo")
     parser.add_argument("--stages", default="multi_low,multi_realistic")
     parser.add_argument("--seeds", default="0,1,2")
     parser.add_argument("--episodes", type=int, default=10)

@@ -190,6 +190,16 @@ Current deadline-aware candidate:
 - The goal is not to make the reported SLA look good by changing the threshold; the goal is to reduce p90/max latency by preventing old steam points from being starved while still letting LSTM-PPO residuals exploit spawn-history memory.
 - Important ablation: `thermal_lstm_spawnhist_latency_v13_deadline_horizon2_base`, which keeps the 15 s SLA/reward but switches BC/base back to ordinary `horizon2`. Use this to show whether deadline-aware glue is the source of improvement.
 
+Follow-up rescue diagnostic:
+
+- `thermal_lstm_spawnhist_latency_v14_rescue`
+- New base policy: `deadline_rescue_horizon2`
+- Normal mode behaves like `deadline_horizon2`.
+- Rescue mode triggers when predicted arrival age for an active steam point exceeds about `0.65 * response_sla_steps`.
+- Rescue mode directly targets the most urgent old point instead of relying only on a soft route score.
+- `residual_emergency_beta_scale=0.05` and `residual_emergency_age_ratio=0.65` make the planner almost fully take over during rescue, while LSTM-PPO remains active during normal phases.
+- Early smoke result: pure planner rescue reduced p90 strongly on `multi_extreme` compared with `deadline_horizon2`, but very short PPO training did not yet prove a held-out PPO gain. Treat v14 as the next diagnostic, not as a confirmed final result.
+
 Preferred final run:
 
 ```bash

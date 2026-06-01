@@ -34,6 +34,7 @@ BC_POLICY_CHOICES = (
     "horizon2",
     "horizon3",
     "deadline_horizon2",
+    "deadline_rescue_horizon2",
     "aco_tsp",
     "planner_ensemble",
 )
@@ -85,7 +86,15 @@ def select_expert_steam(env, policy):
 
 
 def expert_action(env, policy="risk_aware"):
-    if policy in ("dynamic_weighted", "horizon2", "horizon3", "deadline_horizon2", "aco_tsp", "planner_ensemble"):
+    if policy in (
+        "dynamic_weighted",
+        "horizon2",
+        "horizon3",
+        "deadline_horizon2",
+        "deadline_rescue_horizon2",
+        "aco_tsp",
+        "planner_ensemble",
+    ):
         controller = build_base_policy(policy)
         return controller.act(env, None)
     return action_toward_steam(env, select_expert_steam(env, policy))
@@ -302,6 +311,8 @@ def build_arg_parser():
     parser.add_argument("--residual-charging-beta-scale", type=float, help="Residual beta multiplier while spawn charge accumulates.")
     parser.add_argument("--residual-dense-beta-scale", type=float, help="Residual beta multiplier when many targets are active.")
     parser.add_argument("--residual-burst-beta-scale", type=float, help="Residual beta multiplier while a sequential burst is being emitted.")
+    parser.add_argument("--residual-emergency-beta-scale", type=float, help="Extra residual beta multiplier when a target is close to the SLA deadline.")
+    parser.add_argument("--residual-emergency-age-ratio", type=float, help="Predicted arrival age / SLA ratio that triggers emergency residual damping.")
     parser.add_argument("--stagnation-recovery-steps", type=int, help="Steps without coverage before the shield becomes stricter.")
     parser.add_argument("--keep-lstm-state-on-cover", action="store_true", help="Do not reset recurrent state when a steam is covered.")
     parser.add_argument("--keep-lstm-state-on-miss", action="store_true", help="Do not reset recurrent state when a steam is missed.")
@@ -375,6 +386,8 @@ def apply_cli_overrides(config, args):
         "residual_charging_beta_scale",
         "residual_dense_beta_scale",
         "residual_burst_beta_scale",
+        "residual_emergency_beta_scale",
+        "residual_emergency_age_ratio",
         "residual_beta",
         "residual_beta_start",
         "residual_beta_end",
@@ -1062,6 +1075,7 @@ def train(config, run_path):
                     "residual_mid_steps": int(ep_residual_modes.get("mid", 0)),
                     "residual_horizon2_base_steps": int(ep_residual_base_counts.get("horizon2", 0)),
                     "residual_deadline_horizon2_base_steps": int(ep_residual_base_counts.get("deadline_horizon2", 0)),
+                    "residual_deadline_rescue_horizon2_base_steps": int(ep_residual_base_counts.get("deadline_rescue_horizon2", 0)),
                     "residual_dynamic_base_steps": int(ep_residual_base_counts.get("dynamic_weighted", 0)),
                     "residual_guard": bool(config.get("residual_guard", True)),
                     "residual_action_shield": bool(config.get("residual_action_shield", False)),

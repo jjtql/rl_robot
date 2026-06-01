@@ -95,6 +95,8 @@ DEFAULT_CONFIG = {
     "residual_charging_beta_scale": 1.0,
     "residual_dense_beta_scale": 0.35,
     "residual_burst_beta_scale": 0.25,
+    "residual_emergency_beta_scale": 1.0,
+    "residual_emergency_age_ratio": 1.0,
     "stagnation_recovery_steps": 180,
     "recurrent_reset_on_cover": True,
     "recurrent_reset_on_miss": True,

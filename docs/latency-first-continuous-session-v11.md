@@ -617,3 +617,35 @@ To re-score an already trained suite with a different SLA threshold:
 EVAL_RESPONSE_SLA_SECONDS=10 SKIP_TRAIN=1 RUN_DIR=runs/<suite>/train EVAL_DIR=runs/<suite>/eval_sla10 scripts/run_v13_deadline_paper_suite.sh
 EVAL_RESPONSE_SLA_SECONDS=20 SKIP_TRAIN=1 RUN_DIR=runs/<suite>/train EVAL_DIR=runs/<suite>/eval_sla20 scripts/run_v13_deadline_paper_suite.sh
 ```
+
+## V14 Deadline Rescue Diagnostic
+
+V14 is a diagnostic extension for the case where v13 improves old-point backlog but does not reduce p90 latency enough.
+
+New policy:
+
+```text
+deadline_rescue_horizon2
+```
+
+It behaves like `deadline_horizon2` during normal routing, but if any active steam point has predicted arrival age above about `0.65 * response_sla_steps`, it enters rescue mode and directly targets the most urgent old point. This turns the previous soft age weight into a hard anti-starvation rule.
+
+New preset:
+
+```text
+thermal_lstm_spawnhist_latency_v14_rescue
+```
+
+Main differences from v13:
+
+```text
+bc_policy = deadline_rescue_horizon2
+residual_base_policy = deadline_rescue_horizon2
+residual_sparse_base_policy = deadline_rescue_horizon2
+residual_dense_base_policy = deadline_rescue_horizon2
+residual_beta = 0.12
+residual_emergency_age_ratio = 0.65
+residual_emergency_beta_scale = 0.05
+```
+
+The important design intent is that LSTM-PPO can still do residual refinement in normal phases, but when a target is close to starving, the planner almost fully takes over.

@@ -992,6 +992,28 @@ _V13_DEADLINE = _set_flag_values(
         ("--stagnation-recovery-steps", "80"),
     ),
 )
+_V14_RESCUE = _set_flag_values(
+    _V13_DEADLINE,
+    (
+        ("--bc-policy", "deadline_rescue_horizon2"),
+        ("--residual-base-policy", "deadline_rescue_horizon2"),
+        ("--residual-sparse-base-policy", "deadline_rescue_horizon2"),
+        ("--residual-dense-base-policy", "deadline_rescue_horizon2"),
+        ("--residual-beta", "0.12"),
+        ("--residual-beta-start", "0.02"),
+        ("--residual-beta-end", "0.12"),
+        ("--residual-sparse-beta-scale", "1.20"),
+        ("--residual-lull-beta-scale", "1.30"),
+        ("--residual-charging-beta-scale", "0.90"),
+        ("--residual-dense-beta-scale", "0.22"),
+        ("--residual-burst-beta-scale", "0.14"),
+        ("--residual-emergency-beta-scale", "0.05"),
+        ("--residual-emergency-age-ratio", "0.65"),
+        ("--stagnation-recovery-steps", "60"),
+        ("--oldest-active-penalty-gain", "0.65"),
+        ("--age-penalty-scale", "3.60"),
+    ),
+)
 METHODS.update({
     "thermal_lstm_spawnhist_latency_v11_no_pred": _replace_flag_value(
         _replace_flag_value(_V11, "--pred-coef", "0.0"),
@@ -1139,6 +1161,7 @@ METHODS.update({
             "--residual-beta-warmup-steps",
         ),
     ),
+    "thermal_lstm_spawnhist_latency_v14_rescue": _V14_RESCUE,
 })
 
 
