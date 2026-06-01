@@ -116,6 +116,19 @@ class DeadlineHorizonPolicy:
         return action_toward_steam(env, steam)
 
 
+class SlackHorizonPolicy:
+    def __init__(self, horizon=2):
+        self.horizon = int(horizon)
+        self.name = f"slack_horizon{self.horizon}_planner"
+
+    def reset(self):
+        pass
+
+    def act(self, env, obs):
+        steam = select_slack_horizon_steam(env, horizon=self.horizon)
+        return action_toward_steam(env, steam)
+
+
 class CorridorWaypointPolicy:
     name = "corridor_waypoint_planner"
 
@@ -125,6 +138,80 @@ class CorridorWaypointPolicy:
     def act(self, env, obs):
         steam = select_corridor_waypoint_steam(env)
         return action_toward_steam(env, steam)
+
+
+class SlaRouteEnsemblePolicy:
+    name = "sla_route_ensemble_planner"
+
+    def reset(self):
+        pass
+
+    def act(self, env, obs):
+        steam = select_sla_route_ensemble_steam(env)
+        return action_toward_steam(env, steam)
+
+
+class StickySlaRouteEnsemblePolicy:
+    name = "sticky_sla_route_ensemble_planner"
+
+    def __init__(self, switch_margin=0.18, stagnation_patience=70):
+        self.switch_margin = float(switch_margin)
+        self.stagnation_patience = int(stagnation_patience)
+        self.target_id = None
+        self.last_distance = None
+        self.stagnation_steps = 0
+
+    def reset(self):
+        self.target_id = None
+        self.last_distance = None
+        self.stagnation_steps = 0
+
+    def _active_target(self, env):
+        if self.target_id is None:
+            return None
+        return next((steam for steam in env.steams if steam.get("id") == self.target_id), None)
+
+    def _arrival_ratio(self, env, steam):
+        if steam is None:
+            return 0.0
+        sla_steps = max(int(getattr(env, "response_sla_steps", 0) or getattr(env, "max_steam_age", 1)), 1)
+        travel_steps = _travel_steps_between(env, env.cover_center, steam["pos"][:2])
+        return float((steam["age"] + travel_steps) / max(sla_steps, 1))
+
+    def _update_stagnation(self, env, steam):
+        if steam is None:
+            self.last_distance = None
+            self.stagnation_steps = 0
+            return
+        dist = float(np.linalg.norm(steam["pos"][:2] - env.cover_center))
+        if self.last_distance is not None and dist >= self.last_distance - 0.003:
+            self.stagnation_steps += 1
+        else:
+            self.stagnation_steps = 0
+        self.last_distance = dist
+
+    def act(self, env, obs):
+        if not env.steams:
+            self.reset()
+            return np.zeros(env.action_space.shape[0], dtype=np.float32)
+
+        current = self._active_target(env)
+        self._update_stagnation(env, current)
+        candidate = select_sla_route_ensemble_steam(env)
+
+        if current is not None and candidate is not None and self.stagnation_steps < self.stagnation_patience:
+            current_ratio = self._arrival_ratio(env, current)
+            candidate_ratio = self._arrival_ratio(env, candidate)
+            same_target = candidate.get("id") == current.get("id")
+            urgent_switch = candidate_ratio >= max(0.76, current_ratio + self.switch_margin)
+            if same_target or not urgent_switch:
+                return action_toward_steam(env, current)
+
+        target = candidate if candidate is not None else current
+        self.target_id = target.get("id") if target is not None else None
+        self.last_distance = None
+        self.stagnation_steps = 0
+        return action_toward_steam(env, target)
 
 
 class AcoTspPolicy:
@@ -478,8 +565,14 @@ def build_base_policy(kind):
         return DeadlineHorizonPolicy(horizon=2)
     if kind == "deadline_rescue_horizon2":
         return DeadlineHorizonPolicy(horizon=2, rescue=True)
+    if kind == "slack_horizon2":
+        return SlackHorizonPolicy(horizon=2)
     if kind == "corridor_waypoint":
         return CorridorWaypointPolicy()
+    if kind == "sla_route_ensemble":
+        return SlaRouteEnsemblePolicy()
+    if kind == "sticky_sla_ensemble":
+        return StickySlaRouteEnsemblePolicy()
     if kind == "aco_tsp":
         return AcoTspPolicy()
     if kind == "planner_ensemble":
@@ -865,6 +958,97 @@ def _travel_steps_between(env, start_xy, target_xy):
     return max(1.0, np.ceil(max(dist - env.cover_radius, 0.0) / max(env.track_step_size, 1e-6)))
 
 
+def select_slack_horizon_steam(env, horizon=2):
+    if not getattr(env, "steams", None):
+        return None
+    active = list(env.steams)
+    if len(active) == 1:
+        return active[0]
+
+    center = np.asarray(env.cover_center, dtype=np.float32)
+    sla_steps = max(int(getattr(env, "response_sla_steps", 0) or getattr(env, "max_steam_age", 1)), 1)
+    critical = []
+    for steam in active:
+        xy = steam["pos"][:2]
+        travel_steps = _travel_steps_between(env, center, xy)
+        arrival_ratio = float((steam["age"] + travel_steps) / max(sla_steps, 1))
+        age_ratio = float(steam["age"] / max(sla_steps, 1))
+        slack_steps = float(sla_steps - steam["age"] - travel_steps)
+        if arrival_ratio >= 0.62 or slack_steps <= max(35.0, 0.16 * sla_steps):
+            travel_ratio = float(np.clip(travel_steps / max(sla_steps, 1), 0.0, 1.0))
+            critical_score = (
+                3.80 * min(arrival_ratio, 2.0)
+                + 1.65 * min(age_ratio, 2.0)
+                + 0.20 * thermal_score_at_xy(env, xy)
+                + 0.08 * score_steam(env, steam, center)
+                - 0.28 * travel_ratio
+                - 0.004 * travel_steps
+            )
+            critical.append((critical_score, steam))
+    if critical:
+        return max(critical, key=lambda item: item[0])[1]
+
+    horizon = max(1, min(int(horizon), len(active), 4))
+    best_route = None
+    best_score = -np.inf
+    for route in permutations(active, horizon):
+        score = score_slack_target_route(env, route)
+        if score > best_score:
+            best_score = score
+            best_route = route
+    return best_route[0] if best_route else select_deadline_horizon_steam(env, horizon=2, rescue=True)
+
+
+def score_slack_target_route(env, route):
+    center = np.asarray(env.cover_center, dtype=np.float32).copy()
+    elapsed = 0.0
+    total = 0.0
+    covered_ids = set()
+    sla_steps = max(int(getattr(env, "response_sla_steps", 0) or getattr(env, "max_steam_age", 1)), 1)
+
+    for rank, steam in enumerate(route):
+        xy = steam["pos"][:2]
+        travel_steps = _travel_steps_between(env, center, xy)
+        arrival_age = float(steam["age"] + elapsed + travel_steps)
+        arrival_ratio = float(arrival_age / max(sla_steps, 1))
+        age_ratio = float(steam["age"] / max(sla_steps, 1))
+        travel_ratio = float(np.clip(travel_steps / max(sla_steps, 1), 0.0, 1.0))
+        slack_ratio = float(1.0 - arrival_ratio)
+        deadline_pressure = float(np.clip((arrival_ratio - 0.44) / 0.34, 0.0, 2.0))
+        late_pressure = float(np.clip(arrival_ratio - 1.0, 0.0, 2.5))
+        local_score = score_steam(env, steam, center)
+        thermal_score = thermal_score_at_xy(env, xy)
+        discount = 0.84 ** rank
+        total += discount * (
+            0.50 * local_score
+            + 1.70 * deadline_pressure
+            + 0.80 * np.clip(age_ratio, 0.0, 1.5)
+            + 0.20 * thermal_score
+            + 0.16 * np.clip(slack_ratio, 0.0, 1.0)
+            - 3.10 * late_pressure
+            - 0.40 * travel_ratio
+            - 0.006 * travel_steps
+        )
+        center = np.asarray(xy, dtype=np.float32).copy()
+        elapsed += travel_steps
+        covered_ids.add(steam.get("id"))
+
+    leftovers = [steam for steam in env.steams if steam.get("id") not in covered_ids]
+    if leftovers:
+        leftover_ratios = []
+        for steam in leftovers:
+            xy = steam["pos"][:2]
+            travel_steps = _travel_steps_between(env, center, xy)
+            leftover_ratios.append(float((steam["age"] + elapsed + travel_steps) / max(sla_steps, 1)))
+        max_leftover = max(leftover_ratios)
+        mean_leftover = float(np.mean(leftover_ratios))
+        total -= (
+            1.70 * np.clip((max_leftover - 0.62) / 0.30, 0.0, 2.0)
+            + 0.58 * np.clip((mean_leftover - 0.50) / 0.45, 0.0, 2.0)
+        )
+    return float(total)
+
+
 def select_corridor_waypoint_steam(env):
     if not getattr(env, "steams", None):
         return None
@@ -945,6 +1129,97 @@ def select_corridor_waypoint_steam(env):
     if best_score < primary_score + 0.05:
         return primary
     return best_candidate
+
+
+def _route_opportunity_score(env, target_xy, skip_id=None):
+    center = np.asarray(env.cover_center, dtype=np.float32)
+    target_xy = np.asarray(target_xy, dtype=np.float32)
+    route_vec = target_xy - center
+    route_len = float(np.linalg.norm(route_vec))
+    if route_len <= 1e-6:
+        return 0.0
+    route_dir = route_vec / route_len
+    corridor_width = max(float(getattr(env, "cover_radius", 0.1)) * 1.75, 0.15)
+    direct_steps = _travel_steps_between(env, center, target_xy)
+    sla_steps = max(int(getattr(env, "response_sla_steps", 0) or getattr(env, "max_steam_age", 1)), 1)
+    max_extra_steps = max(10.0, 0.12 * sla_steps)
+    score = 0.0
+    for steam in getattr(env, "steams", []) or []:
+        if steam.get("id") == skip_id:
+            continue
+        xy = np.asarray(steam["pos"][:2], dtype=np.float32)
+        rel = xy - center
+        projection = float(np.dot(rel, route_dir))
+        if projection < -0.04 or projection > route_len + corridor_width:
+            continue
+        closest = center + route_dir * np.clip(projection, 0.0, route_len)
+        lateral = float(np.linalg.norm(xy - closest))
+        if lateral > corridor_width:
+            continue
+        extra_steps = _travel_steps_between(env, center, xy) + _travel_steps_between(env, xy, target_xy) - direct_steps
+        if extra_steps > max_extra_steps:
+            continue
+        age_ratio = float(np.clip(steam["age"] / max(sla_steps, 1), 0.0, 1.5))
+        thermal_score = thermal_score_at_xy(env, xy)
+        score += (1.0 - lateral / max(corridor_width, 1e-6)) * (0.45 + 0.70 * age_ratio + 0.25 * thermal_score)
+    return float(score)
+
+
+def select_sla_route_ensemble_steam(env):
+    if not getattr(env, "steams", None):
+        return None
+    active = list(env.steams)
+    if len(active) == 1:
+        return active[0]
+
+    center = np.asarray(env.cover_center, dtype=np.float32)
+    sla_steps = max(int(getattr(env, "response_sla_steps", 0) or getattr(env, "max_steam_age", 1)), 1)
+    best_steam = None
+    best_score = -np.inf
+    for steam in active:
+        xy = np.asarray(steam["pos"][:2], dtype=np.float32)
+        travel_steps = _travel_steps_between(env, center, xy)
+        arrival_ratio = float((steam["age"] + travel_steps) / max(sla_steps, 1))
+        age_ratio = float(steam["age"] / max(sla_steps, 1))
+        travel_ratio = float(np.clip(travel_steps / max(sla_steps, 1), 0.0, 1.0))
+        urgency = float(np.clip((arrival_ratio - 0.36) / 0.44, 0.0, 2.2))
+        near_late_bonus = float(np.clip((arrival_ratio - 0.70) / 0.25, 0.0, 1.8))
+        opportunity = _route_opportunity_score(env, xy, skip_id=steam.get("id"))
+        risk_score = score_steam(env, steam, center)
+        thermal_score = thermal_score_at_xy(env, xy)
+
+        leftovers = [item for item in active if item.get("id") != steam.get("id")]
+        if leftovers:
+            future_ratios = [
+                float((item["age"] + travel_steps + _travel_steps_between(env, xy, item["pos"][:2])) / max(sla_steps, 1))
+                for item in leftovers
+            ]
+            future_max = max(future_ratios)
+            future_mean = float(np.mean(future_ratios))
+        else:
+            future_max = 0.0
+            future_mean = 0.0
+        future_penalty = (
+            1.25 * np.clip((future_max - 0.82) / 0.28, 0.0, 2.0)
+            + 0.38 * np.clip((future_mean - 0.62) / 0.38, 0.0, 2.0)
+        )
+
+        score = (
+            1.65 * urgency
+            + 1.05 * near_late_bonus
+            + 0.62 * np.clip(age_ratio, 0.0, 1.5)
+            + 0.50 * risk_score
+            + 0.35 * np.clip(opportunity, 0.0, 3.0)
+            + 0.14 * thermal_score
+            - future_penalty
+            - 0.28 * travel_ratio
+            - 0.004 * travel_steps
+        )
+        if score > best_score:
+            best_score = float(score)
+            best_steam = steam
+
+    return best_steam if best_steam is not None else select_slack_horizon_steam(env, horizon=2)
 
 
 def max_deadline_arrival_ratio(env):
@@ -1100,7 +1375,10 @@ def build_policy(kind, env, model_path=None, deterministic=True, config_override
         "horizon3",
         "deadline_horizon2",
         "deadline_rescue_horizon2",
+        "slack_horizon2",
         "corridor_waypoint",
+        "sla_route_ensemble",
+        "sticky_sla_ensemble",
         "aco_tsp",
         "planner_ensemble",
     ):

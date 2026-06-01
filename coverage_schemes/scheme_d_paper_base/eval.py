@@ -129,7 +129,7 @@ def build_arg_parser():
     parser = argparse.ArgumentParser(description="Headless evaluation for paper experiments.")
     parser.add_argument("--config", help="Optional JSON config.")
     parser.add_argument("--model", help="Checkpoint for PPO policy.")
-    parser.add_argument("--policy", default="ppo", choices=["ppo", "random", "nearest", "oldest", "distance_age", "risk_aware", "dynamic_weighted", "horizon2", "horizon3", "deadline_horizon2", "deadline_rescue_horizon2", "corridor_waypoint", "aco_tsp", "planner_ensemble"])
+    parser.add_argument("--policy", default="ppo", choices=["ppo", "random", "nearest", "oldest", "distance_age", "risk_aware", "dynamic_weighted", "horizon2", "horizon3", "deadline_horizon2", "deadline_rescue_horizon2", "slack_horizon2", "corridor_waypoint", "sla_route_ensemble", "sticky_sla_ensemble", "aco_tsp", "planner_ensemble"])
     parser.add_argument("--method", help="Method name written to CSV.")
     parser.add_argument("--stage", default="multi_realistic", choices=["single_easy", "single_precision", "multi_low", "multi_realistic", "multi_hard", "multi_extreme"])
     parser.add_argument("--episodes", type=int, default=20)

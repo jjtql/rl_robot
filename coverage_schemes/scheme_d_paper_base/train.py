@@ -35,7 +35,10 @@ BC_POLICY_CHOICES = (
     "horizon3",
     "deadline_horizon2",
     "deadline_rescue_horizon2",
+    "slack_horizon2",
     "corridor_waypoint",
+    "sla_route_ensemble",
+    "sticky_sla_ensemble",
     "aco_tsp",
     "planner_ensemble",
 )
@@ -93,7 +96,10 @@ def expert_action(env, policy="risk_aware"):
         "horizon3",
         "deadline_horizon2",
         "deadline_rescue_horizon2",
+        "slack_horizon2",
         "corridor_waypoint",
+        "sla_route_ensemble",
+        "sticky_sla_ensemble",
         "aco_tsp",
         "planner_ensemble",
     ):
