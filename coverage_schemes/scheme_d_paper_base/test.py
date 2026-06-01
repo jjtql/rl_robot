@@ -22,6 +22,7 @@ POLICY_CHOICES = (
     "horizon3",
     "deadline_horizon2",
     "deadline_rescue_horizon2",
+    "corridor_waypoint",
     "aco_tsp",
     "planner_ensemble",
 )

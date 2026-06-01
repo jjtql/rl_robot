@@ -35,6 +35,7 @@ BC_POLICY_CHOICES = (
     "horizon3",
     "deadline_horizon2",
     "deadline_rescue_horizon2",
+    "corridor_waypoint",
     "aco_tsp",
     "planner_ensemble",
 )
@@ -92,6 +93,7 @@ def expert_action(env, policy="risk_aware"):
         "horizon3",
         "deadline_horizon2",
         "deadline_rescue_horizon2",
+        "corridor_waypoint",
         "aco_tsp",
         "planner_ensemble",
     ):
@@ -176,6 +178,89 @@ def collect_behavior_clone_data(env, episodes, max_steps, seed, expert_policy="r
         "policy": expert_policy,
         "episodes": episode_offset,
         "samples": len(states),
+        "stage_episodes": stage_episodes,
+        "stage_samples": stage_samples,
+    }
+    return states, actions, stats
+
+
+def collect_residual_behavior_clone_data(env, episodes, max_steps, seed, config, stage_plan=None):
+    states = []
+    actions = []
+    if stage_plan is None:
+        stage_plan = [{"name": "single_easy", "episodes": int(episodes)}]
+    stage_plan = [
+        {"name": str(stage["name"]), "episodes": int(stage["episodes"])}
+        for stage in stage_plan
+        if int(stage["episodes"]) > 0
+    ]
+
+    previous_stage = getattr(env, "curriculum_stage", "single_easy")
+    previous_max_steps = env.max_episode_steps
+    previous_target_success_count = env.target_success_count
+    previous_target_coverage = env.target_coverage
+    stage_samples = {}
+    stage_episodes = {}
+    episode_offset = 0
+    skipped_unaligned = 0
+    base_beta = config.get("residual_beta_end")
+    if base_beta is None:
+        base_beta = config.get("residual_beta", 0.25)
+
+    try:
+        for stage in stage_plan:
+            stage_name = stage["name"]
+            env.configure_curriculum(stage_name)
+            env.max_episode_steps = max_steps
+            env.target_success_count = max_steps + 1
+            env.target_coverage = 1.0
+            stage_samples[stage_name] = 0
+            stage_episodes[stage_name] = stage["episodes"]
+
+            base_controller = build_residual_base_policy(config)
+            expert_controller = build_base_policy(config.get("residual_bc_policy", "dynamic_weighted"))
+            for _ in range(stage["episodes"]):
+                s, info = env.reset(seed=seed + 20_000 + episode_offset)
+                base_controller.reset()
+                expert_controller.reset()
+                previous_missed = info.get("missed_count", 0)
+                episode_offset += 1
+                for _ in range(max_steps):
+                    base_action = base_controller.act(env, s)
+                    expert_action = expert_controller.act(env, s)
+                    if env.steams and action_alignment(base_action, expert_action) >= float(
+                        config.get("residual_bc_min_alignment", -1.0)
+                    ):
+                        beta = residual_beta_for_env(config, env, float(base_beta))
+                        actions.append(
+                            residual_bc_target(
+                                base_action,
+                                expert_action,
+                                beta,
+                                mode=config.get("residual_combine_mode", "add"),
+                            )
+                        )
+                        states.append(s)
+                        stage_samples[stage_name] += 1
+                    else:
+                        skipped_unaligned += 1
+                    s, _, _, truncated, info = env.step(expert_action)
+                    if info.get("covered", False) or info.get("missed_count", 0) > previous_missed:
+                        previous_missed = info.get("missed_count", 0)
+                    if truncated:
+                        break
+    finally:
+        env.configure_curriculum(previous_stage)
+        env.max_episode_steps = previous_max_steps
+        env.target_success_count = previous_target_success_count
+        env.target_coverage = previous_target_coverage
+
+    stats = {
+        "policy": config.get("residual_bc_policy", "dynamic_weighted"),
+        "base_policy": config.get("residual_base_policy", "risk_aware"),
+        "episodes": episode_offset,
+        "samples": len(states),
+        "skipped_unaligned": skipped_unaligned,
         "stage_episodes": stage_episodes,
         "stage_samples": stage_samples,
     }
@@ -771,19 +856,39 @@ def train(config, run_path):
         bc_stage_plan = resolve_bc_stage_plan(config)
         bc_policy = config.get("bc_policy", "risk_aware")
         stage_label = ",".join(f"{stage['name']}:{stage['episodes']}" for stage in bc_stage_plan)
-        print(f"\nCollecting {bc_policy} rule-policy warm-start data ({stage_label})...", flush=True)
-        bc_states, bc_actions, bc_collect_stats = collect_behavior_clone_data(
-            env,
-            episodes=config["bc_episodes"],
-            max_steps=min(config["episode_steps"], 500),
-            seed=int(config["seed"]),
-            expert_policy=bc_policy,
-            stage_plan=bc_stage_plan,
-        )
-        if config.get("residual_policy", False):
-            clone_actions = np.zeros_like(np.asarray(bc_actions, dtype=np.float32))
+        if config.get("residual_policy", False) and config.get("residual_supervised_bc", False):
+            residual_bc_policy = config.get("residual_bc_policy", "dynamic_weighted")
+            print(
+                f"\nCollecting residual warm-start data "
+                f"({config.get('residual_base_policy', 'risk_aware')} -> {residual_bc_policy}; {stage_label})...",
+                flush=True,
+            )
+            bc_states, clone_actions, bc_collect_stats = collect_residual_behavior_clone_data(
+                env,
+                episodes=config["bc_episodes"],
+                max_steps=min(config["episode_steps"], 500),
+                seed=int(config["seed"]),
+                config=config,
+                stage_plan=bc_stage_plan,
+            )
         else:
-            clone_actions = bc_actions
+            print(f"\nCollecting {bc_policy} rule-policy warm-start data ({stage_label})...", flush=True)
+            bc_states, bc_actions, bc_collect_stats = collect_behavior_clone_data(
+                env,
+                episodes=config["bc_episodes"],
+                max_steps=min(config["episode_steps"], 500),
+                seed=int(config["seed"]),
+                expert_policy=bc_policy,
+                stage_plan=bc_stage_plan,
+            )
+            if config.get("residual_policy", False):
+                clone_actions = np.zeros_like(np.asarray(bc_actions, dtype=np.float32))
+            else:
+                clone_actions = bc_actions
+        if config.get("residual_policy", False) and not config.get("residual_supervised_bc", False):
+            clone_actions = np.zeros_like(np.asarray(clone_actions, dtype=np.float32))
+        else:
+            clone_actions = np.asarray(clone_actions, dtype=np.float32)
         bc_stats = agent.behavior_clone(bc_states, clone_actions, epochs=config["bc_epochs"])
         logger.log_event("behavior_clone", {**bc_collect_stats, **bc_stats})
         print(
@@ -978,13 +1083,17 @@ def train(config, run_path):
                                     current_residual_beta,
                                     mode=config.get("residual_combine_mode", "add"),
                                 )
+                                bc_mask_for_loss = 1.0
                             else:
                                 bc_action_for_loss = np.zeros_like(raw_a, dtype=np.float32)
+                                bc_mask_for_loss = 0.0
                         else:
                             bc_action_for_loss = np.zeros_like(raw_a, dtype=np.float32)
+                            bc_mask_for_loss = 1.0 if env.steams else 0.0
                     else:
                         a = raw_a
                         bc_action_for_loss = bc_action
+                        bc_mask_for_loss = 1.0 if env.steams else 0.0
                     env.set_prediction_marker(pred_xy)
                     s_n, r_ext, terminated, truncated, info = env.step(a)
 
@@ -1005,7 +1114,7 @@ def train(config, run_path):
                     memory["pred_target"].append(info["pred_target"])
                     memory["pred_mask"].append(info["pred_mask"])
                     memory["bc_a"].append(bc_action_for_loss)
-                    memory["bc_mask"].append(1.0 if env.steams else 0.0)
+                    memory["bc_mask"].append(bc_mask_for_loss)
                     episode_memory_indices.append(len(memory["pred_target"]) - 1)
 
                     if info.get("pred_mask", 0.0) > 0.0:

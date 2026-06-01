@@ -116,6 +116,17 @@ class DeadlineHorizonPolicy:
         return action_toward_steam(env, steam)
 
 
+class CorridorWaypointPolicy:
+    name = "corridor_waypoint_planner"
+
+    def reset(self):
+        pass
+
+    def act(self, env, obs):
+        steam = select_corridor_waypoint_steam(env)
+        return action_toward_steam(env, steam)
+
+
 class AcoTspPolicy:
     name = "aco_tsp_planner"
 
@@ -467,6 +478,8 @@ def build_base_policy(kind):
         return DeadlineHorizonPolicy(horizon=2)
     if kind == "deadline_rescue_horizon2":
         return DeadlineHorizonPolicy(horizon=2, rescue=True)
+    if kind == "corridor_waypoint":
+        return CorridorWaypointPolicy()
     if kind == "aco_tsp":
         return AcoTspPolicy()
     if kind == "planner_ensemble":
@@ -847,6 +860,93 @@ def select_deadline_rescue_steam(env, active=None, threshold=0.65):
     return max(rescue_candidates, key=lambda item: item[0])[1]
 
 
+def _travel_steps_between(env, start_xy, target_xy):
+    dist = float(np.linalg.norm(np.asarray(target_xy, dtype=np.float32) - np.asarray(start_xy, dtype=np.float32)))
+    return max(1.0, np.ceil(max(dist - env.cover_radius, 0.0) / max(env.track_step_size, 1e-6)))
+
+
+def select_corridor_waypoint_steam(env):
+    if not getattr(env, "steams", None):
+        return None
+    active = list(env.steams)
+    if len(active) == 1:
+        return active[0]
+
+    primary = select_deadline_horizon_steam(env, horizon=2, rescue=True)
+    if primary is None:
+        return select_dynamic_weighted_steam(env)
+
+    center = np.asarray(env.cover_center, dtype=np.float32)
+    primary_xy = np.asarray(primary["pos"][:2], dtype=np.float32)
+    route_vec = primary_xy - center
+    route_len = float(np.linalg.norm(route_vec))
+    if route_len <= 1e-6:
+        return primary
+
+    route_dir = route_vec / route_len
+    sla_steps = max(int(getattr(env, "response_sla_steps", 0) or getattr(env, "max_steam_age", 1)), 1)
+    direct_primary_steps = _travel_steps_between(env, center, primary_xy)
+    direct_primary_ratio = float((primary["age"] + direct_primary_steps) / max(sla_steps, 1))
+    if direct_primary_ratio >= 0.92:
+        return primary
+
+    corridor_width = max(float(getattr(env, "cover_radius", 0.1)) * 1.65, 0.14)
+    best_candidate = None
+    best_score = -np.inf
+    primary_id = primary.get("id")
+    max_extra_steps = max(12.0, 0.13 * sla_steps)
+
+    for steam in active:
+        if steam.get("id") == primary_id:
+            continue
+        steam_xy = np.asarray(steam["pos"][:2], dtype=np.float32)
+        rel = steam_xy - center
+        projection = float(np.dot(rel, route_dir))
+        if projection < -0.04 or projection > route_len + corridor_width:
+            continue
+        closest = center + route_dir * np.clip(projection, 0.0, route_len)
+        lateral = float(np.linalg.norm(steam_xy - closest))
+        if lateral > corridor_width:
+            continue
+
+        to_candidate = _travel_steps_between(env, center, steam_xy)
+        candidate_to_primary = _travel_steps_between(env, steam_xy, primary_xy)
+        extra_steps = float(to_candidate + candidate_to_primary - direct_primary_steps)
+        if extra_steps > max_extra_steps:
+            continue
+
+        primary_after_ratio = float((primary["age"] + to_candidate + candidate_to_primary) / max(sla_steps, 1))
+        if primary_after_ratio > 0.98:
+            continue
+
+        candidate_age_ratio = float((steam["age"] + to_candidate) / max(sla_steps, 1))
+        route_fraction = float(np.clip(projection / max(route_len, 1e-6), 0.0, 1.0))
+        lateral_penalty = lateral / max(corridor_width, 1e-6)
+        thermal_score = thermal_score_at_xy(env, steam_xy)
+        local_score = score_steam(env, steam, center)
+        deadline_slack = 1.0 - primary_after_ratio
+        score = (
+            0.95 * local_score
+            + 0.85 * np.clip(candidate_age_ratio, 0.0, 1.5)
+            + 0.22 * thermal_score
+            + 0.18 * route_fraction
+            + 0.22 * np.clip(deadline_slack, 0.0, 1.0)
+            - 0.38 * lateral_penalty
+            - 0.010 * max(extra_steps, 0.0)
+        )
+        if score > best_score:
+            best_score = float(score)
+            best_candidate = steam
+
+    if best_candidate is None:
+        return primary
+
+    primary_score = score_steam(env, primary, center) + 0.40 * np.clip(direct_primary_ratio, 0.0, 1.5)
+    if best_score < primary_score + 0.05:
+        return primary
+    return best_candidate
+
+
 def max_deadline_arrival_ratio(env):
     if not getattr(env, "steams", None):
         return 0.0
@@ -1000,6 +1100,7 @@ def build_policy(kind, env, model_path=None, deterministic=True, config_override
         "horizon3",
         "deadline_horizon2",
         "deadline_rescue_horizon2",
+        "corridor_waypoint",
         "aco_tsp",
         "planner_ensemble",
     ):

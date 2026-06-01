@@ -1040,6 +1040,57 @@ _V15_PATHBEND = _set_flag_values(
         ("--bc-supervised-decay-steps", "500000"),
     ),
 ) + ["--residual-pathbend-shield", "--residual-supervised-bc"]
+_V16_CORRIDOR = _set_flag_values(
+    _V15_PATHBEND,
+    (
+        ("--bc-policy", "corridor_waypoint"),
+        ("--residual-bc-policy", "corridor_waypoint"),
+        ("--residual-min-alignment", "-0.05"),
+        ("--residual-beta", "0.34"),
+        ("--residual-beta-start", "0.08"),
+        ("--residual-beta-end", "0.34"),
+        ("--residual-sparse-beta-scale", "1.00"),
+        ("--residual-lull-beta-scale", "1.05"),
+        ("--residual-charging-beta-scale", "0.90"),
+        ("--residual-dense-beta-scale", "0.38"),
+        ("--residual-burst-beta-scale", "0.30"),
+        ("--residual-emergency-beta-scale", "0.20"),
+        ("--residual-emergency-age-ratio", "0.78"),
+        ("--residual-pathbend-min-progress-ratio", "0.08"),
+        ("--residual-pathbend-guarded-progress-ratio", "0.25"),
+        ("--residual-pathbend-allow-backtrack-steps", "0.08"),
+        ("--residual-bc-min-alignment", "-0.05"),
+        ("--bc-supervised-coef", "0.08"),
+        ("--bc-supervised-min-coef", "0.015"),
+        ("--bc-supervised-decay-steps", "600000"),
+    ),
+)
+_V17_CORRIDOR_BASE = _set_flag_values(
+    _V16_CORRIDOR,
+    (
+        ("--residual-base-policy", "corridor_waypoint"),
+        ("--residual-sparse-base-policy", "corridor_waypoint"),
+        ("--residual-dense-base-policy", "corridor_waypoint"),
+        ("--residual-min-alignment", "0.20"),
+        ("--residual-beta", "0.16"),
+        ("--residual-beta-start", "0.02"),
+        ("--residual-beta-end", "0.16"),
+        ("--residual-sparse-beta-scale", "0.80"),
+        ("--residual-lull-beta-scale", "0.90"),
+        ("--residual-charging-beta-scale", "0.75"),
+        ("--residual-dense-beta-scale", "0.22"),
+        ("--residual-burst-beta-scale", "0.16"),
+        ("--residual-emergency-beta-scale", "0.05"),
+        ("--residual-emergency-age-ratio", "0.70"),
+        ("--residual-pathbend-min-progress-ratio", "0.30"),
+        ("--residual-pathbend-guarded-progress-ratio", "0.55"),
+        ("--residual-pathbend-allow-backtrack-steps", "0.0"),
+        ("--residual-bc-min-alignment", "0.20"),
+        ("--bc-supervised-coef", "0.04"),
+        ("--bc-supervised-min-coef", "0.0"),
+        ("--bc-supervised-decay-steps", "300000"),
+    ),
+)
 METHODS.update({
     "thermal_lstm_spawnhist_latency_v11_no_pred": _replace_flag_value(
         _replace_flag_value(_V11, "--pred-coef", "0.0"),
@@ -1189,6 +1240,8 @@ METHODS.update({
     ),
     "thermal_lstm_spawnhist_latency_v14_rescue": _V14_RESCUE,
     "thermal_lstm_spawnhist_latency_v15_pathbend": _V15_PATHBEND,
+    "thermal_lstm_spawnhist_latency_v16_corridor": _V16_CORRIDOR,
+    "thermal_lstm_spawnhist_latency_v17_corridor_base": _V17_CORRIDOR_BASE,
 })
 
 
