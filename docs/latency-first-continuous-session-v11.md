@@ -193,31 +193,38 @@ residual_burst_beta_scale = 0.25
 stagnation_recovery_steps = 90
 ```
 
-Use v11 as the conservative baseline and v12-fast as the final candidate. If v12-fast improves SLA/p90 without destroying coverage, use it as the paper's main method. If it hurts coverage too much, report it as a latency-pressure ablation and keep v11 as the main method.
+Use v11 as the conservative baseline and v12-fast as the previous strict-4s SLA diagnostic. V13 deadline-aware glue is the current candidate for reducing the 30-40 s latency tail.
 
 ## One-Command Paper Suite
 
-Use this as the main paper experiment entry point:
+Use this as the conservative v11 experiment entry point:
 
 ```bash
 cd /Data2/jj/rl_robot
 scripts/run_v11_full_paper_suite.sh
 ```
 
-For the final run after the real-time training update, prefer:
+For the current deadline-aware run, prefer:
+
+```bash
+cd /Data2/jj/rl_robot
+scripts/run_v13_deadline_paper_suite.sh
+```
+
+For the previous strict-4s fast-response diagnostic:
 
 ```bash
 cd /Data2/jj/rl_robot
 scripts/run_v12_fast_paper_suite.sh
 ```
 
-By default this runs:
+The shared suite runner defaults to:
 
-- full v11 plus all v11 ablations,
+- the method list exported by the wrapper script,
 - seeds `0,1,2`,
 - two concurrent training jobs,
 - held-out latest-checkpoint evaluation for every trained PPO run,
-- `horizon2`, `dynamic_weighted`, and `planner_ensemble` baselines,
+- the baseline policies exported by the wrapper script,
 - stages `multi_low,multi_realistic,multi_hard,multi_extreme`,
 - eval seeds `100,101,102`,
 - 3 eval episodes per seed,
@@ -236,22 +243,25 @@ Common variants:
 
 ```bash
 # More or fewer parallel training jobs.
-TRAIN_JOBS=3 scripts/run_v12_fast_paper_suite.sh
+TRAIN_JOBS=3 scripts/run_v13_deadline_paper_suite.sh
 
 # Only evaluate existing runs, no training.
-SKIP_TRAIN=1 RUN_DIR=runs/v12_fast_paper_suite/train scripts/run_v12_fast_paper_suite.sh
+SKIP_TRAIN=1 RUN_DIR=runs/v13_deadline_paper_suite/train scripts/run_v13_deadline_paper_suite.sh
 
 # Train only.
-SKIP_EVAL=1 scripts/run_v12_fast_paper_suite.sh
+SKIP_EVAL=1 scripts/run_v13_deadline_paper_suite.sh
 
 # Include simulator-time tables in addition to real decision-time tables.
-RUN_SIM_TIME_EVAL=1 scripts/run_v12_fast_paper_suite.sh
+RUN_SIM_TIME_EVAL=1 scripts/run_v13_deadline_paper_suite.sh
 
 # Override the simulator-time reporting step if the XML timestep changes.
-RUN_SIM_TIME_EVAL=1 SIM_DT_SECONDS=0.002 scripts/run_v12_fast_paper_suite.sh
+RUN_SIM_TIME_EVAL=1 SIM_DT_SECONDS=0.002 scripts/run_v13_deadline_paper_suite.sh
 
-# Also sweep saved checkpoints for the full v12-fast method.
-RUN_CHECKPOINT_SWEEP=1 scripts/run_v12_fast_paper_suite.sh
+# Also sweep saved checkpoints for the full v13 method.
+RUN_CHECKPOINT_SWEEP=1 scripts/run_v13_deadline_paper_suite.sh
+
+# Re-score the same trained suite with a stricter SLA table.
+EVAL_RESPONSE_SLA_SECONDS=10 SKIP_TRAIN=1 RUN_DIR=runs/v13_deadline_paper_suite/train EVAL_DIR=runs/v13_deadline_paper_suite/eval_sla10 scripts/run_v13_deadline_paper_suite.sh
 ```
 
 For a cheaper dry run:
@@ -549,3 +559,61 @@ For v11/v12, report results in this order:
 9. reward
 
 The method is only a real improvement if it improves response latency/SLA without creating unacceptable backlog, misses, or motion roughness.
+
+## V13 Deadline-Aware Planner Glue
+
+The v12-fast run showed that a 4 s SLA target is too strict for the current task definition and that the long tail is mainly a queueing/starvation problem: some steam points remain active for tens of seconds while the controller keeps chasing easier visible targets.
+
+V13 keeps the LSTM-PPO core unchanged and changes only the planner glue around it:
+
+- new baseline/BC/residual base policy: `deadline_horizon2`,
+- same two-step route enumeration as `horizon2`,
+- much stronger age/deadline pressure in the route score,
+- SLA target moved to the process-reasonable range: `response_sla_seconds = 15.0`,
+- evaluation can still be repeated at 10 s, 15 s, and 20 s using `EVAL_RESPONSE_SLA_SECONDS`.
+
+The route score estimates the age at arrival:
+
+```text
+arrival_age_i = age_i + elapsed_route_steps + travel_steps_i
+deadline_ratio_i = arrival_age_i / response_sla_steps
+```
+
+Targets close to the deadline receive a sharply larger score, while leaving old targets outside the planned route receives an explicit starvation penalty. The intended behavior is:
+
+- dense/burst phase: still cover efficiently with a horizon2 route,
+- queue pressure high: oldest near-deadline targets dominate over nearest targets,
+- sparse/lull phase: LSTM memory and spawn prediction can bias the residual toward likely upcoming hotspots,
+- while moving toward an old point, the two-step route may still cover a newer point if it does not make the old point miss the deadline.
+
+Implemented entry point:
+
+```bash
+cd /Data2/jj/rl_robot
+scripts/run_v13_deadline_paper_suite.sh
+```
+
+Default v13 methods:
+
+| Method | Purpose |
+| --- | --- |
+| `thermal_lstm_spawnhist_latency_v13_deadline` | Full deadline-aware residual LSTM-PPO |
+| `thermal_lstm_spawnhist_latency_v13_deadline_horizon2_base` | Same SLA/reward, but ordinary `horizon2` BC/base |
+| `thermal_lstm_spawnhist_latency_v13_deadline_no_pred` | Remove auxiliary spawn prediction |
+| `thermal_lstm_spawnhist_latency_v13_deadline_no_carry` | Remove continuous recurrent carry |
+| `thermal_lstm_spawnhist_latency_v13_deadline_no_latency_reward` | Remove latency-first reward |
+| `thermal_lstm_spawnhist_latency_v13_deadline_no_attention` | Remove steam attention observation |
+| `thermal_lstm_spawnhist_latency_v13_deadline_no_residual` | Remove planner residual glue |
+
+Default v13 baselines:
+
+```text
+deadline_horizon2,horizon2,oldest,dynamic_weighted,planner_ensemble
+```
+
+To re-score an already trained suite with a different SLA threshold:
+
+```bash
+EVAL_RESPONSE_SLA_SECONDS=10 SKIP_TRAIN=1 RUN_DIR=runs/<suite>/train EVAL_DIR=runs/<suite>/eval_sla10 scripts/run_v13_deadline_paper_suite.sh
+EVAL_RESPONSE_SLA_SECONDS=20 SKIP_TRAIN=1 RUN_DIR=runs/<suite>/train EVAL_DIR=runs/<suite>/eval_sla20 scripts/run_v13_deadline_paper_suite.sh
+```

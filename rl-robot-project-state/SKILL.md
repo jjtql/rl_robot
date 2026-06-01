@@ -143,7 +143,8 @@ Extra v11 experiment support:
 - Training CSV logs second-based latency fields such as `cover_latency_seconds`, `cover_latency_p90_seconds`, `response_sla_seconds`, and `oldest_active_age_max_seconds`.
 - `coverage_schemes/scheme_d_paper_base/test.py` now uses `build_policy()` and checkpoint config, so the MuJoCo viewer path matches v11 residual PPO, burst/lull spawn, thermal context, and latency metrics.
 - `scripts/run_v11_full_paper_suite.sh` is the conservative v11 one-command entry point.
-- `scripts/run_v12_fast_paper_suite.sh` is the preferred final one-command entry point after the real-time SLA update.
+- `scripts/run_v12_fast_paper_suite.sh` is the previous fast-response one-command entry point after the real-time SLA update.
+- `scripts/run_v13_deadline_paper_suite.sh` is the next latency-tail candidate after v12 showed that 4 s SLA is too strict and p90 latency remains dominated by old-point starvation.
 
 Current fast-response candidate:
 
@@ -172,7 +173,31 @@ Current fast-response candidate:
   - `thermal_lstm_spawnhist_latency_v12_fast_no_attention`
   - `thermal_lstm_spawnhist_latency_v12_fast_no_residual`
 
+Current deadline-aware candidate:
+
+- `thermal_lstm_spawnhist_latency_v13_deadline`
+- Same LSTM-PPO core as v11/v12.
+- New `deadline_horizon2` planner base:
+  - still enumerates a two-target route like `horizon2`,
+  - scores each target by predicted age at arrival,
+  - strongly raises priority when `arrival_age / response_sla_steps` approaches or exceeds 1,
+  - penalizes leaving old active targets outside the short route.
+- Uses `deadline_horizon2` for BC expert, fixed residual base, sparse residual base, and dense residual base.
+- Sets a process-reasonable target:
+  - `decision_dt_seconds=0.05`
+  - `response_sla_seconds=15.0`
+  - internal `response_sla_steps=300`
+- The goal is not to make the reported SLA look good by changing the threshold; the goal is to reduce p90/max latency by preventing old steam points from being starved while still letting LSTM-PPO residuals exploit spawn-history memory.
+- Important ablation: `thermal_lstm_spawnhist_latency_v13_deadline_horizon2_base`, which keeps the 15 s SLA/reward but switches BC/base back to ordinary `horizon2`. Use this to show whether deadline-aware glue is the source of improvement.
+
 Preferred final run:
+
+```bash
+cd /Data2/jj/rl_robot
+scripts/run_v13_deadline_paper_suite.sh
+```
+
+Previous v12 fast-response suite:
 
 ```bash
 cd /Data2/jj/rl_robot
@@ -188,26 +213,27 @@ scripts/run_v11_full_paper_suite.sh
 
 Default suite behavior:
 
-- trains full v11 plus all v11 ablations,
+- trains the selected full method plus its ablations,
 - uses seeds `0,1,2`,
 - runs two training jobs concurrently,
 - evaluates latest checkpoints for every PPO run,
-- evaluates `horizon2`, `dynamic_weighted`, and `planner_ensemble` baselines,
+- v13 evaluates `deadline_horizon2`, `horizon2`, `oldest`, `dynamic_weighted`, and `planner_ensemble` baselines,
 - uses held-out eval seeds `100,101,102`,
 - uses `multi_low,multi_realistic,multi_hard,multi_extreme`,
 - uses 3200-step demo-mode windows,
 - reports real high-level control time with `DECISION_DT_SECONDS=0.05`,
 - writes `combined_summary.csv` and `paper_summary.csv`.
 
-Useful suite switches also work through `scripts/run_v12_fast_paper_suite.sh`:
+Useful suite switches also work through `scripts/run_v13_deadline_paper_suite.sh`:
 
 ```bash
-TRAIN_JOBS=3 scripts/run_v12_fast_paper_suite.sh
-SKIP_TRAIN=1 RUN_DIR=runs/v12_fast_paper_suite/train scripts/run_v12_fast_paper_suite.sh
-SKIP_EVAL=1 scripts/run_v12_fast_paper_suite.sh
-RUN_SIM_TIME_EVAL=1 scripts/run_v12_fast_paper_suite.sh
-RUN_SIM_TIME_EVAL=1 SIM_DT_SECONDS=0.002 scripts/run_v12_fast_paper_suite.sh
-RUN_CHECKPOINT_SWEEP=1 scripts/run_v12_fast_paper_suite.sh
+TRAIN_JOBS=3 scripts/run_v13_deadline_paper_suite.sh
+SKIP_TRAIN=1 RUN_DIR=runs/v13_deadline_paper_suite/train scripts/run_v13_deadline_paper_suite.sh
+SKIP_EVAL=1 scripts/run_v13_deadline_paper_suite.sh
+RUN_SIM_TIME_EVAL=1 scripts/run_v13_deadline_paper_suite.sh
+RUN_SIM_TIME_EVAL=1 SIM_DT_SECONDS=0.002 scripts/run_v13_deadline_paper_suite.sh
+RUN_CHECKPOINT_SWEEP=1 scripts/run_v13_deadline_paper_suite.sh
+EVAL_RESPONSE_SLA_SECONDS=10 SKIP_TRAIN=1 RUN_DIR=runs/v13_deadline_paper_suite/train EVAL_DIR=runs/v13_deadline_paper_suite/eval_sla10 scripts/run_v13_deadline_paper_suite.sh
 ```
 
 Latest completed v11 training:

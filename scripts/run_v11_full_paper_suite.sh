@@ -13,6 +13,7 @@ EVAL_SEEDS="${EVAL_SEEDS:-100,101,102}"
 EVAL_EPISODES="${EVAL_EPISODES:-3}"
 EVAL_STEPS="${EVAL_STEPS:-3200}"
 DECISION_DT_SECONDS="${DECISION_DT_SECONDS:-0.05}"
+EVAL_RESPONSE_SLA_SECONDS="${EVAL_RESPONSE_SLA_SECONDS:-}"
 SIM_DT_SECONDS="${SIM_DT_SECONDS:-0.002}"
 BASELINE_POLICIES="${BASELINE_POLICIES:-horizon2,dynamic_weighted,planner_ensemble}"
 
@@ -56,6 +57,7 @@ print_config() {
   echo "eval episodes:        $EVAL_EPISODES"
   echo "eval steps:           $EVAL_STEPS"
   echo "decision dt seconds:  $DECISION_DT_SECONDS"
+  echo "eval SLA seconds:     ${EVAL_RESPONSE_SLA_SECONDS:-checkpoint config}"
   echo "sim dt seconds:       $SIM_DT_SECONDS"
   echo "device:               $DEVICE"
   echo "run sim-time eval:    $RUN_SIM_TIME_EVAL"
@@ -126,6 +128,9 @@ run_matrix() {
     command+=(--decision-dt-seconds "$DECISION_DT_SECONDS")
   elif [[ "$timebase" == "sim_time" ]]; then
     command+=(--decision-dt-seconds "$SIM_DT_SECONDS")
+  fi
+  if [[ -n "$EVAL_RESPONSE_SLA_SECONDS" ]]; then
+    command+=(--response-sla-seconds "$EVAL_RESPONSE_SLA_SECONDS")
   fi
 
   echo

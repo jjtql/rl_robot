@@ -101,6 +101,19 @@ class RecedingHorizonPolicy:
         return action_toward_steam(env, steam)
 
 
+class DeadlineHorizonPolicy:
+    def __init__(self, horizon=2):
+        self.horizon = int(horizon)
+        self.name = f"deadline_horizon{self.horizon}_planner"
+
+    def reset(self):
+        pass
+
+    def act(self, env, obs):
+        steam = select_deadline_horizon_steam(env, horizon=self.horizon)
+        return action_toward_steam(env, steam)
+
+
 class AcoTspPolicy:
     name = "aco_tsp_planner"
 
@@ -436,6 +449,8 @@ def build_base_policy(kind):
         return RecedingHorizonPolicy(horizon=2)
     if kind == "horizon3":
         return RecedingHorizonPolicy(horizon=3)
+    if kind == "deadline_horizon2":
+        return DeadlineHorizonPolicy(horizon=2)
     if kind == "aco_tsp":
         return AcoTspPolicy()
     if kind == "planner_ensemble":
@@ -749,6 +764,76 @@ def score_target_route(env, route):
     return float(total)
 
 
+def select_deadline_horizon_steam(env, horizon=2):
+    if not env.steams:
+        return None
+    active = list(env.steams)
+    if len(active) == 1:
+        return active[0]
+    horizon = max(1, min(int(horizon), len(active), 4))
+    best_route = None
+    best_score = -np.inf
+    for route in permutations(active, horizon):
+        score = score_deadline_target_route(env, route)
+        if score > best_score:
+            best_score = score
+            best_route = route
+    return best_route[0] if best_route else max(active, key=lambda steam: steam["age"])
+
+
+def score_deadline_target_route(env, route):
+    center = np.asarray(env.cover_center, dtype=np.float32).copy()
+    elapsed = 0.0
+    total = 0.0
+    covered_ids = set()
+    sla_steps = max(int(getattr(env, "response_sla_steps", 0) or getattr(env, "max_steam_age", 1)), 1)
+    max_age = max(int(getattr(env, "max_steam_age", sla_steps)), 1)
+    weights = {
+        "age": 0.58,
+        "distance": 0.14,
+        "material": 0.0,
+        "reachability": 0.10,
+        "thermal": 0.18,
+    }
+    for rank, steam in enumerate(route):
+        xy = steam["pos"][:2]
+        dist = float(np.linalg.norm(xy - center))
+        travel_steps = max(1.0, np.ceil(max(dist - env.cover_radius, 0.0) / max(env.track_step_size, 1e-6)))
+        arrival_age = float(steam["age"] + elapsed + travel_steps)
+        age_ratio = float(np.clip(arrival_age / max(sla_steps, 1), 0.0, 2.5))
+        raw_age_ratio = float(np.clip(arrival_age / max(max_age, 1), 0.0, 1.5))
+        deadline_pressure = float(np.clip((age_ratio - 0.50) / 0.50, 0.0, 1.6))
+        late_pressure = float(np.clip(age_ratio - 1.0, 0.0, 2.0))
+        travel_ratio = float(np.clip(travel_steps / max(sla_steps, 1), 0.0, 1.0))
+        local_score = score_steam(env, steam, center, weights)
+        thermal_score = thermal_score_at_xy(env, xy)
+        discount = 0.86 ** rank
+        total += discount * (
+            0.55 * local_score
+            + 0.70 * raw_age_ratio
+            + 1.35 * deadline_pressure
+            + 1.10 * late_pressure
+            + 0.12 * thermal_score
+            - 0.34 * travel_ratio
+            - 0.006 * travel_steps
+        )
+        center = xy.copy()
+        elapsed += travel_steps
+        covered_ids.add(steam.get("id"))
+
+    leftovers = [steam for steam in env.steams if steam.get("id") not in covered_ids]
+    if leftovers:
+        leftover_ratios = np.array(
+            [(steam["age"] + elapsed) / max(sla_steps, 1) for steam in leftovers],
+            dtype=np.float32,
+        )
+        oldest_leftover = float(np.max(leftover_ratios))
+        mean_leftover = float(np.mean(leftover_ratios))
+        starvation_pressure = np.clip((oldest_leftover - 0.55) / 0.45, 0.0, 2.0)
+        total -= 0.80 * starvation_pressure + 0.22 * np.clip(mean_leftover, 0.0, 2.0)
+    return float(total)
+
+
 def plan_aco_tsp_route(env, ants=12, iterations=3, alpha=1.0, beta=2.0):
     steams = list(env.steams)
     n = len(steams)
@@ -833,6 +918,7 @@ def build_policy(kind, env, model_path=None, deterministic=True, config_override
         "dynamic_weighted",
         "horizon2",
         "horizon3",
+        "deadline_horizon2",
         "aco_tsp",
         "planner_ensemble",
     ):

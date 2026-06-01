@@ -962,6 +962,36 @@ _V12_FAST = _set_flag_values(
         ("--stagnation-recovery-steps", "90"),
     ),
 )
+_V13_DEADLINE = _set_flag_values(
+    _V12_FAST,
+    (
+        ("--bc-policy", "deadline_horizon2"),
+        ("--residual-base-policy", "deadline_horizon2"),
+        ("--residual-sparse-base-policy", "deadline_horizon2"),
+        ("--residual-dense-base-policy", "deadline_horizon2"),
+        ("--response-sla-seconds", "15.0"),
+        ("--response-sla-steps", "300"),
+        ("--cover-latency-penalty-gain", "24.0"),
+        ("--oldest-active-penalty-gain", "0.55"),
+        ("--backlog-penalty-gain", "0.24"),
+        ("--response-sla-bonus", "18.0"),
+        ("--response-sla-miss-penalty", "26.0"),
+        ("--cover-reward-scale", "0.65"),
+        ("--quick-cover-bonus-scale", "2.60"),
+        ("--active-steam-penalty-scale", "2.30"),
+        ("--age-penalty-scale", "3.20"),
+        ("--residual-beta", "0.18"),
+        ("--residual-beta-start", "0.025"),
+        ("--residual-beta-end", "0.18"),
+        ("--residual-beta-warmup-steps", "700000"),
+        ("--residual-sparse-beta-scale", "1.35"),
+        ("--residual-lull-beta-scale", "1.50"),
+        ("--residual-charging-beta-scale", "1.05"),
+        ("--residual-dense-beta-scale", "0.32"),
+        ("--residual-burst-beta-scale", "0.22"),
+        ("--stagnation-recovery-steps", "80"),
+    ),
+)
 METHODS.update({
     "thermal_lstm_spawnhist_latency_v11_no_pred": _replace_flag_value(
         _replace_flag_value(_V11, "--pred-coef", "0.0"),
@@ -1034,6 +1064,61 @@ METHODS.update({
     ),
     "thermal_lstm_spawnhist_latency_v12_fast_no_residual": _drop_flags(
         _V12_FAST,
+        flags=("--residual-policy", "--residual-action-shield"),
+        value_flags=(
+            "--residual-base-policy",
+            "--residual-glue",
+            "--residual-sparse-base-policy",
+            "--residual-dense-base-policy",
+            "--residual-phase-sparse-threshold",
+            "--residual-phase-dense-threshold",
+            "--residual-sparse-beta-scale",
+            "--residual-lull-beta-scale",
+            "--residual-charging-beta-scale",
+            "--residual-dense-beta-scale",
+            "--residual-burst-beta-scale",
+            "--stagnation-recovery-steps",
+            "--residual-beta",
+            "--residual-beta-start",
+            "--residual-beta-end",
+            "--residual-beta-warmup-steps",
+        ),
+    ),
+    "thermal_lstm_spawnhist_latency_v13_deadline": _V13_DEADLINE,
+    "thermal_lstm_spawnhist_latency_v13_deadline_horizon2_base": _set_flag_values(
+        _V13_DEADLINE,
+        (
+            ("--bc-policy", "horizon2"),
+            ("--residual-base-policy", "horizon2"),
+            ("--residual-sparse-base-policy", "horizon2"),
+            ("--residual-dense-base-policy", "horizon2"),
+        ),
+    ),
+    "thermal_lstm_spawnhist_latency_v13_deadline_no_pred": _replace_flag_value(
+        _replace_flag_value(_V13_DEADLINE, "--pred-coef", "0.0"),
+        "--prediction-horizon-steps",
+        "0",
+    ),
+    "thermal_lstm_spawnhist_latency_v13_deadline_no_carry": _replace_flag_value(
+        _replace_flag_value(
+            _drop_flags(_V13_DEADLINE, flags=("--carry-lstm-state-across-chunks",)),
+            "--continuous-session-chunks",
+            "1",
+        ),
+        "--lstm-sequence-chunks",
+        "1",
+    ),
+    "thermal_lstm_spawnhist_latency_v13_deadline_no_latency_reward": _drop_flags(
+        _V13_DEADLINE,
+        flags=("--latency-first-reward",),
+    ),
+    "thermal_lstm_spawnhist_latency_v13_deadline_no_attention": _drop_flags(
+        _V13_DEADLINE,
+        flags=("--steam-attention",),
+        value_flags=("--attention-steam-count",),
+    ),
+    "thermal_lstm_spawnhist_latency_v13_deadline_no_residual": _drop_flags(
+        _V13_DEADLINE,
         flags=("--residual-policy", "--residual-action-shield"),
         value_flags=(
             "--residual-base-policy",

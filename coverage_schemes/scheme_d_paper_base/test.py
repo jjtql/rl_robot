@@ -20,6 +20,7 @@ POLICY_CHOICES = (
     "dynamic_weighted",
     "horizon2",
     "horizon3",
+    "deadline_horizon2",
     "aco_tsp",
     "planner_ensemble",
 )

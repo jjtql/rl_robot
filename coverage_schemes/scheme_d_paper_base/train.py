@@ -33,6 +33,7 @@ BC_POLICY_CHOICES = (
     "dynamic_weighted",
     "horizon2",
     "horizon3",
+    "deadline_horizon2",
     "aco_tsp",
     "planner_ensemble",
 )
@@ -84,7 +85,7 @@ def select_expert_steam(env, policy):
 
 
 def expert_action(env, policy="risk_aware"):
-    if policy in ("dynamic_weighted", "horizon2", "horizon3", "aco_tsp", "planner_ensemble"):
+    if policy in ("dynamic_weighted", "horizon2", "horizon3", "deadline_horizon2", "aco_tsp", "planner_ensemble"):
         controller = build_base_policy(policy)
         return controller.act(env, None)
     return action_toward_steam(env, select_expert_steam(env, policy))
@@ -1060,6 +1061,7 @@ def train(config, run_path):
                     "residual_burst_steps": int(ep_residual_modes.get("burst", 0)),
                     "residual_mid_steps": int(ep_residual_modes.get("mid", 0)),
                     "residual_horizon2_base_steps": int(ep_residual_base_counts.get("horizon2", 0)),
+                    "residual_deadline_horizon2_base_steps": int(ep_residual_base_counts.get("deadline_horizon2", 0)),
                     "residual_dynamic_base_steps": int(ep_residual_base_counts.get("dynamic_weighted", 0)),
                     "residual_guard": bool(config.get("residual_guard", True)),
                     "residual_action_shield": bool(config.get("residual_action_shield", False)),

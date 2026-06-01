@@ -98,6 +98,14 @@ The design goal is not to replace LSTM-PPO. The design goal is to change how the
 - Material observation/reward is disabled in v9/v10 because previous runs suggested material-quality terms were diluting the coverage objective on `multi_hard` and `multi_extreme`.
 - Burst/lull steam generation creates the intended complementarity: rapid one-by-one thermal bursts give the visible-target base controller useful targets to route through, while quiet sparse intervals expose the LSTM's short-term spawn prediction value.
 
+Latest latency-tail direction after v12:
+
+- Use `thermal_lstm_spawnhist_latency_v13_deadline` when the user wants to reduce 30-40 s long-tail latency.
+- Keep `horizon2` route length, but replace ordinary `horizon2` with `deadline_horizon2` for BC and residual base.
+- `deadline_horizon2` scores predicted age at arrival instead of mainly nearest/route efficiency, so old queued steam points cannot be starved indefinitely.
+- Train with `response_sla_seconds=15.0` at `decision_dt_seconds=0.05`; evaluate also at 10 s and 20 s if the paper needs strict/target/loose SLA tables.
+- Critical ablation: compare full v13 against `thermal_lstm_spawnhist_latency_v13_deadline_horizon2_base` to isolate whether deadline-aware glue, not just the changed SLA/reward, reduced p90 latency.
+
 What to look for:
 
 - A real improvement should beat `horizon2`, `horizon3`, `dynamic_weighted`, and `planner_ensemble` on held-out `multi_hard`, not just improve training-window last50.
