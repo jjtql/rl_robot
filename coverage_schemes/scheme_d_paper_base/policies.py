@@ -191,9 +191,24 @@ class StickySlaRouteEnsemblePolicy:
         self.last_distance = dist
 
     def act(self, env, obs):
+        return self.act_with_gate(env, obs, None)
+
+    def act_with_gate(self, env, obs, gate_action=None):
         if not env.steams:
+            gate = np.zeros(3, dtype=np.float32) if gate_action is None else np.asarray(gate_action, dtype=np.float32)
+            hotspot = getattr(env, "_dominant_thermal_hotspot", lambda: None)()
+            phase = str(getattr(env, "burst_lull_phase", "") or "")
+            if hotspot is not None and gate.shape[0] >= 3 and gate[2] > 0.10 and phase in ("lull", "charging", "burst"):
+                return action_toward_xy(env, hotspot["xy"])
             self.reset()
             return np.zeros(env.action_space.shape[0], dtype=np.float32)
+
+        gate = np.zeros(3, dtype=np.float32) if gate_action is None else np.asarray(gate_action, dtype=np.float32)
+        lock_bias = float(np.clip(gate[0], -1.0, 1.0)) if gate.shape[0] > 0 else 0.0
+        rescue_bias = float(np.clip(gate[1], -1.0, 1.0)) if gate.shape[0] > 1 else 0.0
+        hotspot_bias = float(np.clip(gate[2], -1.0, 1.0)) if gate.shape[0] > 2 else 0.0
+        switch_margin = float(np.clip(self.switch_margin + 0.12 * lock_bias, 0.04, 0.36))
+        urgency_floor = float(np.clip(0.76 - 0.10 * rescue_bias, 0.60, 0.88))
 
         current = self._active_target(env)
         self._update_stagnation(env, current)
@@ -203,15 +218,17 @@ class StickySlaRouteEnsemblePolicy:
             current_ratio = self._arrival_ratio(env, current)
             candidate_ratio = self._arrival_ratio(env, candidate)
             same_target = candidate.get("id") == current.get("id")
-            urgent_switch = candidate_ratio >= max(0.76, current_ratio + self.switch_margin)
+            urgent_switch = candidate_ratio >= max(urgency_floor, current_ratio + switch_margin)
             if same_target or not urgent_switch:
-                return action_toward_steam(env, current)
+                action = action_toward_steam(env, current)
+                return maybe_blend_toward_hotspot(env, action, current, hotspot_bias)
 
         target = candidate if candidate is not None else current
         self.target_id = target.get("id") if target is not None else None
         self.last_distance = None
         self.stagnation_steps = 0
-        return action_toward_steam(env, target)
+        action = action_toward_steam(env, target)
+        return maybe_blend_toward_hotspot(env, action, target, hotspot_bias)
 
 
 class AcoTspPolicy:
@@ -449,6 +466,16 @@ class PhaseAwareResidualBasePolicy:
         self.last_policy_name = policy_name
         return self.controllers[policy_name].act(env, obs)
 
+    def act_with_gate(self, env, obs, gate_action=None):
+        mode = residual_glue_mode(env, self.config)
+        policy_name = self._policy_name_for_mode(mode)
+        self.last_mode = mode
+        self.last_policy_name = policy_name
+        controller = self.controllers[policy_name]
+        if hasattr(controller, "act_with_gate"):
+            return controller.act_with_gate(env, obs, gate_action)
+        return controller.act(env, obs)
+
 
 class PPOPolicy:
     name = "ppo"
@@ -519,16 +546,19 @@ class PPOPolicy:
                 deterministic=self.deterministic,
             )
         if self.residual_policy:
-            base_action = self.residual_base_policy.act(env, obs)
-            action = combine_residual_action(
-                base_action,
-                action,
-                beta=residual_beta_for_env(self.config, env, self.residual_beta),
-                guard=self.residual_guard,
-                min_alignment=self.residual_min_alignment,
-                mode=self.residual_combine_mode,
-            )
-            if self.residual_action_shield:
+            if self.residual_combine_mode == "gate":
+                action = planner_gate_action(env, self.residual_base_policy, obs, action)
+            else:
+                base_action = self.residual_base_policy.act(env, obs)
+                action = combine_residual_action(
+                    base_action,
+                    action,
+                    beta=residual_beta_for_env(self.config, env, self.residual_beta),
+                    guard=self.residual_guard,
+                    min_alignment=self.residual_min_alignment,
+                    mode=self.residual_combine_mode,
+                )
+            if self.residual_action_shield and self.residual_combine_mode != "gate":
                 action = shield_residual_action(
                     env,
                     base_action,
@@ -614,6 +644,39 @@ def combine_residual_action(
         elif base_norm > 1e-6 and cand_norm <= 1e-6:
             return base_action.astype(np.float32)
     return candidate
+
+
+def planner_gate_action(env, base_controller, obs, gate_action):
+    if base_controller is None:
+        return np.clip(np.asarray(gate_action, dtype=np.float32), -1.0, 1.0).astype(np.float32)
+    if hasattr(base_controller, "act_with_gate"):
+        return base_controller.act_with_gate(env, obs, gate_action)
+    return base_controller.act(env, obs)
+
+
+def planner_gate_bc_target(env):
+    gate = np.zeros(3, dtype=np.float32)
+    max_ratio = max_deadline_arrival_ratio(env)
+    active_count = len(getattr(env, "steams", []) or [])
+    sparse_threshold = int(getattr(env, "burst_lull_sparse_threshold", 2))
+    phase = str(getattr(env, "burst_lull_phase", "") or "")
+
+    # Gate 0: lock bias. Positive keeps the current target; negative makes
+    # urgent switches easier. This teaches anti-jitter unless the queue is old.
+    gate[0] = float(np.clip(0.55 - 1.75 * max(max_ratio - 0.52, 0.0), -0.75, 0.65))
+
+    # Gate 1: rescue bias. Positive lowers the sticky switch threshold.
+    gate[1] = float(np.clip((max_ratio - 0.58) / 0.24, -0.60, 1.0))
+
+    # Gate 2: thermal anticipation. Only encourage hotspot drift in sparse,
+    # low-risk lulls; otherwise keep planner motion target-centric.
+    if active_count <= sparse_threshold and phase in ("lull", "charging") and max_ratio < 0.62:
+        gate[2] = 0.75
+    elif active_count == 0 and phase in ("lull", "charging", "burst"):
+        gate[2] = 0.45
+    else:
+        gate[2] = -0.35
+    return gate.astype(np.float32)
 
 
 def shield_residual_action(
@@ -1352,15 +1415,41 @@ def route_cost(env, steams, order):
 
 
 def action_toward_steam(env, steam):
-    action = np.zeros(env.action_space.shape[0], dtype=np.float32)
     if steam is None:
+        return np.zeros(env.action_space.shape[0], dtype=np.float32)
+    return action_toward_xy(env, steam["pos"][:2])
+
+
+def action_toward_xy(env, xy):
+    action = np.zeros(env.action_space.shape[0], dtype=np.float32)
+    if xy is None:
         return action
-    vec = steam["pos"][:2] - env.cover_center
+    vec = np.asarray(xy, dtype=np.float32)[:2] - env.cover_center
     norm = np.linalg.norm(vec)
     if norm > 1e-6:
         action[:2] = vec / norm
     action[2] = 1.0
     return np.clip(action, env.action_space.low, env.action_space.high).astype(np.float32)
+
+
+def maybe_blend_toward_hotspot(env, action, target, hotspot_bias):
+    if hotspot_bias <= 0.35 or target is None:
+        return action
+    active_count = len(getattr(env, "steams", []) or [])
+    phase = str(getattr(env, "burst_lull_phase", "") or "")
+    if active_count > max(2, int(getattr(env, "burst_lull_sparse_threshold", 2))) and phase not in ("lull", "charging"):
+        return action
+    sla_steps = max(int(getattr(env, "response_sla_steps", 0) or getattr(env, "max_steam_age", 1)), 1)
+    target_ratio = float((target["age"] + _travel_steps_between(env, env.cover_center, target["pos"][:2])) / max(sla_steps, 1))
+    if target_ratio >= 0.65:
+        return action
+    hotspot = getattr(env, "_dominant_thermal_hotspot", lambda: None)()
+    if hotspot is None:
+        return action
+    hotspot_action = action_toward_xy(env, hotspot["xy"])
+    blend = float(np.clip(0.18 * hotspot_bias, 0.0, 0.18))
+    mixed = (1.0 - blend) * np.asarray(action, dtype=np.float32) + blend * hotspot_action
+    return np.clip(mixed, env.action_space.low, env.action_space.high).astype(np.float32)
 
 
 def build_policy(kind, env, model_path=None, deterministic=True, config_override=None):

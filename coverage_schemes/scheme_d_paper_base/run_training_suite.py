@@ -1175,6 +1175,26 @@ _V21_STICKY_SAFE = _set_flag_values(
         ("--bc-supervised-min-coef", "0.0"),
     ),
 )
+_V22_RL_GATE = _set_flag_values(
+    _V21_STICKY_SAFE,
+    (
+        ("--residual-combine-mode", "gate"),
+        ("--residual-beta", "0.0"),
+        ("--residual-beta-start", "0.0"),
+        ("--residual-beta-end", "0.0"),
+        ("--residual-min-alignment", "0.0"),
+        ("--bc-supervised-coef", "0.0"),
+        ("--bc-supervised-min-coef", "0.0"),
+    ),
+)
+_V23_RL_GATE_BC = _set_flag_values(
+    _V22_RL_GATE + ["--residual-supervised-bc"],
+    (
+        ("--bc-supervised-coef", "0.045"),
+        ("--bc-supervised-min-coef", "0.005"),
+        ("--bc-supervised-decay-steps", "420000"),
+    ),
+)
 METHODS.update({
     "thermal_lstm_spawnhist_latency_v11_no_pred": _replace_flag_value(
         _replace_flag_value(_V11, "--pred-coef", "0.0"),
@@ -1329,6 +1349,8 @@ METHODS.update({
     "thermal_lstm_spawnhist_latency_v18_slack_edf": _V18_SLACK_EDF,
     "thermal_lstm_spawnhist_latency_v20_sticky_sla": _V20_STICKY_SLA,
     "thermal_lstm_spawnhist_latency_v21_sticky_safe": _V21_STICKY_SAFE,
+    "thermal_lstm_spawnhist_latency_v22_rl_gate": _V22_RL_GATE,
+    "thermal_lstm_spawnhist_latency_v23_rl_gate_bc": _V23_RL_GATE_BC,
 })
 
 

@@ -17,6 +17,8 @@ from .policies import (
     build_base_policy,
     build_residual_base_policy,
     combine_residual_action,
+    planner_gate_action,
+    planner_gate_bc_target,
     residual_beta_for_env,
     shield_residual_action,
     select_distance_age_steam,
@@ -273,6 +275,66 @@ def collect_residual_behavior_clone_data(env, episodes, max_steps, seed, config,
     return states, actions, stats
 
 
+def collect_gate_behavior_clone_data(env, episodes, max_steps, seed, config, stage_plan=None):
+    states = []
+    actions = []
+    if stage_plan is None:
+        stage_plan = [{"name": "single_easy", "episodes": int(episodes)}]
+    stage_plan = [
+        {"name": str(stage["name"]), "episodes": int(stage["episodes"])}
+        for stage in stage_plan
+        if int(stage["episodes"]) > 0
+    ]
+
+    previous_stage = getattr(env, "curriculum_stage", "single_easy")
+    previous_max_steps = env.max_episode_steps
+    previous_target_success_count = env.target_success_count
+    previous_target_coverage = env.target_coverage
+    stage_samples = {}
+    stage_episodes = {}
+    episode_offset = 0
+
+    try:
+        for stage in stage_plan:
+            stage_name = stage["name"]
+            env.configure_curriculum(stage_name)
+            env.max_episode_steps = max_steps
+            env.target_success_count = max_steps + 1
+            env.target_coverage = 1.0
+            stage_samples[stage_name] = 0
+            stage_episodes[stage_name] = stage["episodes"]
+
+            base_controller = build_residual_base_policy(config)
+            for _ in range(stage["episodes"]):
+                s, info = env.reset(seed=seed + 30_000 + episode_offset)
+                base_controller.reset()
+                episode_offset += 1
+                for _ in range(max_steps):
+                    gate = planner_gate_bc_target(env)
+                    a = planner_gate_action(env, base_controller, s, gate)
+                    states.append(s)
+                    actions.append(gate)
+                    stage_samples[stage_name] += 1
+                    s, _, _, truncated, info = env.step(a)
+                    if truncated:
+                        break
+    finally:
+        env.configure_curriculum(previous_stage)
+        env.max_episode_steps = previous_max_steps
+        env.target_success_count = previous_target_success_count
+        env.target_coverage = previous_target_coverage
+
+    stats = {
+        "policy": "planner_gate_bc",
+        "base_policy": config.get("residual_base_policy", "risk_aware"),
+        "episodes": episode_offset,
+        "samples": len(states),
+        "stage_episodes": stage_episodes,
+        "stage_samples": stage_samples,
+    }
+    return states, actions, stats
+
+
 def allocate_stage_episodes(stage_plan, total_episodes):
     total_episodes = int(total_episodes)
     if total_episodes <= 0:
@@ -411,7 +473,7 @@ def build_arg_parser():
     parser.add_argument("--residual-beta-start", type=float, help="Initial residual action scale for release schedules.")
     parser.add_argument("--residual-beta-end", type=float, help="Final residual action scale after the release warmup.")
     parser.add_argument("--residual-beta-warmup-steps", type=int, help="Steps over which residual beta increases from start to end.")
-    parser.add_argument("--residual-combine-mode", choices=("add", "blend"), help="How the learned action is glued to the planner action.")
+    parser.add_argument("--residual-combine-mode", choices=("add", "blend", "gate"), help="How the learned action is glued to the planner action.")
     parser.add_argument("--residual-min-alignment", type=float, help="Minimum cosine alignment used by the residual guard.")
     parser.add_argument("--no-residual-guard", action="store_true", help="Disable residual direction guard.")
     parser.add_argument("--residual-action-shield", action="store_true", help="Keep residual actions from undoing planner progress.")
@@ -862,7 +924,25 @@ def train(config, run_path):
         bc_stage_plan = resolve_bc_stage_plan(config)
         bc_policy = config.get("bc_policy", "risk_aware")
         stage_label = ",".join(f"{stage['name']}:{stage['episodes']}" for stage in bc_stage_plan)
-        if config.get("residual_policy", False) and config.get("residual_supervised_bc", False):
+        if (
+            config.get("residual_policy", False)
+            and config.get("residual_combine_mode", "add") == "gate"
+            and config.get("residual_supervised_bc", False)
+        ):
+            print(
+                f"\nCollecting planner-gate warm-start data "
+                f"({config.get('residual_base_policy', 'risk_aware')}; {stage_label})...",
+                flush=True,
+            )
+            bc_states, clone_actions, bc_collect_stats = collect_gate_behavior_clone_data(
+                env,
+                episodes=config["bc_episodes"],
+                max_steps=min(config["episode_steps"], 500),
+                seed=int(config["seed"]),
+                config=config,
+                stage_plan=bc_stage_plan,
+            )
+        elif config.get("residual_policy", False) and config.get("residual_supervised_bc", False):
             residual_bc_policy = config.get("residual_bc_policy", "dynamic_weighted")
             print(
                 f"\nCollecting residual warm-start data "
@@ -1036,66 +1116,84 @@ def train(config, run_path):
                     scheduled_residual_beta = residual_beta_at_step(config, total_steps)
                     current_residual_beta = scheduled_residual_beta
                     if config.get("residual_policy", False):
-                        base_action = residual_base_controller.act(env, s)
                         current_residual_beta = residual_beta_for_env(config, env, scheduled_residual_beta)
-                        ep_residual_modes[getattr(residual_base_controller, "last_mode", "fixed")] += 1
-                        ep_residual_base_counts[
-                            getattr(
-                                residual_base_controller,
-                                "last_policy_name",
-                                config.get("residual_base_policy", "risk_aware"),
-                            )
-                        ] += 1
-                        ep_residual_betas.append(float(current_residual_beta))
-                        a = combine_residual_action(
-                            base_action,
-                            raw_a,
-                            beta=current_residual_beta,
-                            guard=config.get("residual_guard", True),
-                            min_alignment=config.get("residual_min_alignment", 0.15),
-                            mode=config.get("residual_combine_mode", "add"),
-                        )
-                        if config.get("residual_action_shield", False):
-                            pathbend_enabled = bool(config.get("residual_pathbend_shield", False))
-                            a = shield_residual_action(
-                                env,
-                                base_action,
-                                a,
-                                previous_action=previous_env_action,
-                                stagnation_steps=getattr(env, "steps_since_cover", 0),
-                                recovery_steps=config.get("stagnation_recovery_steps", 180),
-                                min_progress_ratio=(
-                                    config.get("residual_pathbend_min_progress_ratio", 0.35)
-                                    if pathbend_enabled
-                                    else 0.35
-                                ),
-                                guarded_progress_ratio=(
-                                    config.get("residual_pathbend_guarded_progress_ratio", 0.50)
-                                    if pathbend_enabled
-                                    else 0.50
-                                ),
-                                allow_backtrack_steps=(
-                                    config.get("residual_pathbend_allow_backtrack_steps", 0.0)
-                                    if pathbend_enabled
-                                    else 0.0
-                                ),
-                            )
-                        if config.get("residual_supervised_bc", False):
-                            bend_expert_action = residual_bc_controller.act(env, s)
-                            if action_alignment(base_action, bend_expert_action) >= float(config.get("residual_bc_min_alignment", -1.0)):
-                                bc_action_for_loss = residual_bc_target(
-                                    base_action,
-                                    bend_expert_action,
-                                    current_residual_beta,
-                                    mode=config.get("residual_combine_mode", "add"),
-                                )
+                        if config.get("residual_combine_mode", "add") == "gate":
+                            a = planner_gate_action(env, residual_base_controller, s, raw_a)
+                            if config.get("residual_supervised_bc", False):
+                                bc_action_for_loss = planner_gate_bc_target(env)
                                 bc_mask_for_loss = 1.0
                             else:
                                 bc_action_for_loss = np.zeros_like(raw_a, dtype=np.float32)
-                                bc_mask_for_loss = 0.0
+                                bc_mask_for_loss = 1.0 if env.steams else 0.0
+                            ep_residual_modes[getattr(residual_base_controller, "last_mode", "fixed")] += 1
+                            ep_residual_base_counts[
+                                getattr(
+                                    residual_base_controller,
+                                    "last_policy_name",
+                                    config.get("residual_base_policy", "risk_aware"),
+                                )
+                            ] += 1
+                            ep_residual_betas.append(float(np.mean(np.abs(raw_a))))
                         else:
-                            bc_action_for_loss = np.zeros_like(raw_a, dtype=np.float32)
-                            bc_mask_for_loss = 1.0 if env.steams else 0.0
+                            base_action = residual_base_controller.act(env, s)
+                            ep_residual_modes[getattr(residual_base_controller, "last_mode", "fixed")] += 1
+                            ep_residual_base_counts[
+                                getattr(
+                                    residual_base_controller,
+                                    "last_policy_name",
+                                    config.get("residual_base_policy", "risk_aware"),
+                                )
+                            ] += 1
+                            ep_residual_betas.append(float(current_residual_beta))
+                            a = combine_residual_action(
+                                base_action,
+                                raw_a,
+                                beta=current_residual_beta,
+                                guard=config.get("residual_guard", True),
+                                min_alignment=config.get("residual_min_alignment", 0.15),
+                                mode=config.get("residual_combine_mode", "add"),
+                            )
+                            if config.get("residual_action_shield", False):
+                                pathbend_enabled = bool(config.get("residual_pathbend_shield", False))
+                                a = shield_residual_action(
+                                    env,
+                                    base_action,
+                                    a,
+                                    previous_action=previous_env_action,
+                                    stagnation_steps=getattr(env, "steps_since_cover", 0),
+                                    recovery_steps=config.get("stagnation_recovery_steps", 180),
+                                    min_progress_ratio=(
+                                        config.get("residual_pathbend_min_progress_ratio", 0.35)
+                                        if pathbend_enabled
+                                        else 0.35
+                                    ),
+                                    guarded_progress_ratio=(
+                                        config.get("residual_pathbend_guarded_progress_ratio", 0.50)
+                                        if pathbend_enabled
+                                        else 0.50
+                                    ),
+                                    allow_backtrack_steps=(
+                                        config.get("residual_pathbend_allow_backtrack_steps", 0.0)
+                                        if pathbend_enabled
+                                        else 0.0
+                                    ),
+                                )
+                            if config.get("residual_supervised_bc", False):
+                                bend_expert_action = residual_bc_controller.act(env, s)
+                                if action_alignment(base_action, bend_expert_action) >= float(config.get("residual_bc_min_alignment", -1.0)):
+                                    bc_action_for_loss = residual_bc_target(
+                                        base_action,
+                                        bend_expert_action,
+                                        current_residual_beta,
+                                        mode=config.get("residual_combine_mode", "add"),
+                                    )
+                                    bc_mask_for_loss = 1.0
+                                else:
+                                    bc_action_for_loss = np.zeros_like(raw_a, dtype=np.float32)
+                                    bc_mask_for_loss = 0.0
+                            else:
+                                bc_action_for_loss = np.zeros_like(raw_a, dtype=np.float32)
+                                bc_mask_for_loss = 1.0 if env.steams else 0.0
                     else:
                         a = raw_a
                         bc_action_for_loss = bc_action
