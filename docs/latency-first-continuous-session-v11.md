@@ -649,3 +649,36 @@ residual_emergency_beta_scale = 0.05
 ```
 
 The important design intent is that LSTM-PPO can still do residual refinement in normal phases, but when a target is close to starving, the planner almost fully takes over.
+
+## V15 Path-Bending Residual Diagnostic
+
+V15 addresses a different limitation: action residuals that are too small cannot express the desired behavior of "move toward old steam first, but bend the path through nearby new steam or thermal hotspots."
+
+New preset:
+
+```text
+thermal_lstm_spawnhist_latency_v15_pathbend
+```
+
+Main glue changes:
+
+```text
+residual_base_policy = deadline_rescue_horizon2
+residual_combine_mode = blend
+residual_beta_end = 0.45
+residual_pathbend_shield = true
+residual_pathbend_min_progress_ratio = 0.0
+residual_pathbend_guarded_progress_ratio = 0.15
+residual_bc_policy = dynamic_weighted
+residual_bc_min_alignment = 0.10
+residual_supervised_bc = true
+```
+
+Interpretation:
+
+- `deadline_rescue_horizon2` keeps the primary target old/deadline-driven.
+- `blend` mode gives the LSTM output direct path-shaping authority instead of only a small additive correction.
+- path-bend shielding allows lateral detours as long as the motion does not strongly abandon the old target.
+- residual BC uses `dynamic_weighted` only when it is roughly aligned with the old-target route, teaching "bend through a useful nearby target" rather than "switch to a completely different target."
+
+Early smoke showed that path-bending increases actual action deviation and therefore really exposes LSTM route-control capacity. It is not yet proven to improve held-out p90 latency; treat it as a diagnostic for whether the residual learner can use extra freedom without damaging old-target response.

@@ -200,6 +200,15 @@ Follow-up rescue diagnostic:
 - `residual_emergency_beta_scale=0.05` and `residual_emergency_age_ratio=0.65` make the planner almost fully take over during rescue, while LSTM-PPO remains active during normal phases.
 - Early smoke result: pure planner rescue reduced p90 strongly on `multi_extreme` compared with `deadline_horizon2`, but very short PPO training did not yet prove a held-out PPO gain. Treat v14 as the next diagnostic, not as a confirmed final result.
 
+Path-bending diagnostic:
+
+- `thermal_lstm_spawnhist_latency_v15_pathbend`
+- Keeps old/deadline-driven primary target through `deadline_rescue_horizon2`.
+- Changes residual glue from additive correction to `residual_combine_mode=blend`, so LSTM-PPO can bend the path instead of only nudging it.
+- Enables `residual_pathbend_shield`, which allows lateral detours while still preserving some progress toward the old target.
+- Enables `residual_supervised_bc` with `residual_bc_policy=dynamic_weighted` and `residual_bc_min_alignment=0.10`, so the LSTM is only supervised toward a thermal/nearby target when that direction is roughly along the old-target route.
+- Early smoke result: action deviation increased substantially, proving the LSTM has more path authority, but held-out latency was not yet better. Treat v15 as a diagnostic for "can extra LSTM freedom help?" rather than a confirmed final method.
+
 Preferred final run:
 
 ```bash

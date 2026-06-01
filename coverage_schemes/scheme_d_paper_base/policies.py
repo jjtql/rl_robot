@@ -385,6 +385,8 @@ class PPOPolicy:
         else:
             self.residual_beta = float(config.get("residual_beta", 0.25))
         self.residual_guard = bool(config.get("residual_guard", True))
+        self.residual_combine_mode = str(config.get("residual_combine_mode", "add"))
+        self.residual_min_alignment = float(config.get("residual_min_alignment", 0.15))
         self.residual_action_shield = bool(config.get("residual_action_shield", False))
         self.stagnation_recovery_steps = int(config.get("stagnation_recovery_steps", 180))
         self.recurrent_reset_on_cover = bool(config.get("recurrent_reset_on_cover", True))
@@ -425,6 +427,8 @@ class PPOPolicy:
                 action,
                 beta=residual_beta_for_env(self.config, env, self.residual_beta),
                 guard=self.residual_guard,
+                min_alignment=self.residual_min_alignment,
+                mode=self.residual_combine_mode,
             )
             if self.residual_action_shield:
                 action = shield_residual_action(
@@ -434,6 +438,9 @@ class PPOPolicy:
                     previous_action=self.previous_env_action,
                     stagnation_steps=getattr(env, "steps_since_cover", 0),
                     recovery_steps=self.stagnation_recovery_steps,
+                    min_progress_ratio=float(self.config.get("residual_pathbend_min_progress_ratio", 0.35)),
+                    guarded_progress_ratio=float(self.config.get("residual_pathbend_guarded_progress_ratio", 0.50)),
+                    allow_backtrack_steps=float(self.config.get("residual_pathbend_allow_backtrack_steps", 0.0)),
                 )
             self.previous_env_action = action.copy()
         return action.astype(np.float32)
@@ -473,10 +480,22 @@ def build_residual_base_policy(config):
     return build_base_policy(config.get("residual_base_policy", "risk_aware"))
 
 
-def combine_residual_action(base_action, residual_action, beta=0.25, guard=True, min_alignment=0.15):
+def combine_residual_action(
+    base_action,
+    residual_action,
+    beta=0.25,
+    guard=True,
+    min_alignment=0.15,
+    mode="add",
+):
     base_action = np.asarray(base_action, dtype=np.float32)
     residual_action = np.asarray(residual_action, dtype=np.float32)
-    candidate = np.clip(base_action + float(beta) * residual_action, -1.0, 1.0).astype(np.float32)
+    beta = float(np.clip(beta, 0.0, 1.0))
+    if str(mode) == "blend":
+        candidate = ((1.0 - beta) * base_action + beta * residual_action).astype(np.float32)
+    else:
+        candidate = (base_action + beta * residual_action).astype(np.float32)
+    candidate = np.clip(candidate, -1.0, 1.0).astype(np.float32)
     if guard:
         base_xy = base_action[:2]
         cand_xy = candidate[:2]
@@ -499,6 +518,9 @@ def shield_residual_action(
     stagnation_steps=0,
     recovery_steps=180,
     min_progress_margin=0.002,
+    min_progress_ratio=0.35,
+    guarded_progress_ratio=0.50,
+    allow_backtrack_steps=0.0,
 ):
     base_action = np.asarray(base_action, dtype=np.float32)
     candidate_action = np.asarray(candidate_action, dtype=np.float32)
@@ -545,11 +567,14 @@ def shield_residual_action(
     base_progress = projected_progress(base_action)
     candidate_progress = projected_progress(candidate_action)
     recovery_mode = int(stagnation_steps) >= int(recovery_steps)
+    backtrack_allowance = max(float(allow_backtrack_steps), 0.0) * step_scale
+    required_progress = max(-backtrack_allowance, float(min_progress_ratio) * base_progress)
 
-    if candidate_progress + min_progress_margin < max(0.0, 0.35 * base_progress):
+    if candidate_progress + min_progress_margin < required_progress:
         guarded = 0.70 * base_action + 0.30 * candidate_action
         guarded_progress = projected_progress(guarded)
-        if guarded_progress + min_progress_margin < max(0.0, 0.50 * base_progress):
+        guarded_required = max(-backtrack_allowance, float(guarded_progress_ratio) * base_progress)
+        if guarded_progress + min_progress_margin < guarded_required:
             return np.clip(base_action, -1.0, 1.0).astype(np.float32)
         return np.clip(guarded, -1.0, 1.0).astype(np.float32)
 

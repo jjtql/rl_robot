@@ -100,6 +100,27 @@ def expert_action(env, policy="risk_aware"):
     return action_toward_steam(env, select_expert_steam(env, policy))
 
 
+def action_alignment(first_action, second_action):
+    first_xy = np.asarray(first_action, dtype=np.float32)[:2]
+    second_xy = np.asarray(second_action, dtype=np.float32)[:2]
+    first_norm = float(np.linalg.norm(first_xy))
+    second_norm = float(np.linalg.norm(second_xy))
+    if first_norm <= 1e-6 or second_norm <= 1e-6:
+        return 1.0
+    return float(np.dot(first_xy, second_xy) / (first_norm * second_norm + 1e-8))
+
+
+def residual_bc_target(base_action, expert_action, beta, mode="add"):
+    base_action = np.asarray(base_action, dtype=np.float32)
+    expert_action = np.asarray(expert_action, dtype=np.float32)
+    beta = max(float(beta), 1e-3)
+    if str(mode) == "blend":
+        target = (expert_action - (1.0 - beta) * base_action) / beta
+    else:
+        target = (expert_action - base_action) / beta
+    return np.clip(target, -1.0, 1.0).astype(np.float32)
+
+
 def collect_behavior_clone_data(env, episodes, max_steps, seed, expert_policy="risk_aware", stage_plan=None):
     states = []
     actions = []
@@ -299,6 +320,8 @@ def build_arg_parser():
     parser.add_argument("--residual-beta-start", type=float, help="Initial residual action scale for release schedules.")
     parser.add_argument("--residual-beta-end", type=float, help="Final residual action scale after the release warmup.")
     parser.add_argument("--residual-beta-warmup-steps", type=int, help="Steps over which residual beta increases from start to end.")
+    parser.add_argument("--residual-combine-mode", choices=("add", "blend"), help="How the learned action is glued to the planner action.")
+    parser.add_argument("--residual-min-alignment", type=float, help="Minimum cosine alignment used by the residual guard.")
     parser.add_argument("--no-residual-guard", action="store_true", help="Disable residual direction guard.")
     parser.add_argument("--residual-action-shield", action="store_true", help="Keep residual actions from undoing planner progress.")
     parser.add_argument("--residual-glue", choices=RESIDUAL_GLUE_CHOICES, help="How planner and LSTM residual actions are combined.")
@@ -313,6 +336,13 @@ def build_arg_parser():
     parser.add_argument("--residual-burst-beta-scale", type=float, help="Residual beta multiplier while a sequential burst is being emitted.")
     parser.add_argument("--residual-emergency-beta-scale", type=float, help="Extra residual beta multiplier when a target is close to the SLA deadline.")
     parser.add_argument("--residual-emergency-age-ratio", type=float, help="Predicted arrival age / SLA ratio that triggers emergency residual damping.")
+    parser.add_argument("--residual-pathbend-shield", action="store_true", help="Relax the residual shield so LSTM can bend paths while preserving old-target progress.")
+    parser.add_argument("--residual-pathbend-min-progress-ratio", type=float, help="Minimum fraction of base old-target progress required from a path-bending action.")
+    parser.add_argument("--residual-pathbend-guarded-progress-ratio", type=float, help="Minimum fraction of base progress required after shield blending.")
+    parser.add_argument("--residual-pathbend-allow-backtrack-steps", type=float, help="How many track steps a path-bending action may move away from the old target.")
+    parser.add_argument("--residual-supervised-bc", action="store_true", help="Use BC loss to teach the residual to bend from the base planner toward a secondary expert.")
+    parser.add_argument("--residual-bc-policy", choices=BC_POLICY_CHOICES, help="Secondary expert used for residual BC targets.")
+    parser.add_argument("--residual-bc-min-alignment", type=float, help="Only use residual BC targets whose XY action aligns with the base action above this cosine.")
     parser.add_argument("--stagnation-recovery-steps", type=int, help="Steps without coverage before the shield becomes stricter.")
     parser.add_argument("--keep-lstm-state-on-cover", action="store_true", help="Do not reset recurrent state when a steam is covered.")
     parser.add_argument("--keep-lstm-state-on-miss", action="store_true", help="Do not reset recurrent state when a steam is missed.")
@@ -392,6 +422,13 @@ def apply_cli_overrides(config, args):
         "residual_beta_start",
         "residual_beta_end",
         "residual_beta_warmup_steps",
+        "residual_combine_mode",
+        "residual_min_alignment",
+        "residual_pathbend_min_progress_ratio",
+        "residual_pathbend_guarded_progress_ratio",
+        "residual_pathbend_allow_backtrack_steps",
+        "residual_bc_policy",
+        "residual_bc_min_alignment",
         "stagnation_recovery_steps",
         "cover_reward_scale",
         "quick_cover_bonus_scale",
@@ -469,6 +506,10 @@ def apply_cli_overrides(config, args):
         config["residual_guard"] = False
     if args.residual_action_shield:
         config["residual_action_shield"] = True
+    if args.residual_pathbend_shield:
+        config["residual_pathbend_shield"] = True
+    if args.residual_supervised_bc:
+        config["residual_supervised_bc"] = True
     if args.keep_lstm_state_on_cover:
         config["recurrent_reset_on_cover"] = False
     if args.keep_lstm_state_on_miss:
@@ -802,7 +843,9 @@ def train(config, run_path):
                 f"(recovery={config.get('stagnation_recovery_steps', 180)})\n"
                 f"Residual beta: {config.get('residual_beta', 0.25)} "
                 f"(schedule {config.get('residual_beta_start')} -> {config.get('residual_beta_end')} "
-                f"over {config.get('residual_beta_warmup_steps', 0)} steps)\n"
+                f"over {config.get('residual_beta_warmup_steps', 0)} steps, "
+                f"mode={config.get('residual_combine_mode', 'add')}, "
+                f"pathbend={config.get('residual_pathbend_shield', False)})\n"
                 f"Latency-first reward: {env.latency_first_reward_enabled} "
                 f"(sla={env.response_sla_steps} steps/{env.response_sla_seconds:.2f}s, "
                 f"dt={env.metric_step_seconds:.3f}s, latency_gain={env.cover_latency_penalty_gain}, "
@@ -828,6 +871,9 @@ def train(config, run_path):
             stage_coverages = []
             residual_base_controller = build_residual_base_policy(config)
             bc_controller = build_base_policy(config.get("bc_policy", "risk_aware"))
+            residual_bc_controller = build_base_policy(
+                config.get("residual_bc_policy", config.get("bc_policy", "risk_aware"))
+            )
             session_chunks = max(int(config.get("continuous_session_chunks", 1)), 1)
             carry_session_hidden = (
                 bool(config.get("carry_lstm_state_across_chunks", False))
@@ -895,8 +941,11 @@ def train(config, run_path):
                             raw_a,
                             beta=current_residual_beta,
                             guard=config.get("residual_guard", True),
+                            min_alignment=config.get("residual_min_alignment", 0.15),
+                            mode=config.get("residual_combine_mode", "add"),
                         )
                         if config.get("residual_action_shield", False):
+                            pathbend_enabled = bool(config.get("residual_pathbend_shield", False))
                             a = shield_residual_action(
                                 env,
                                 base_action,
@@ -904,8 +953,35 @@ def train(config, run_path):
                                 previous_action=previous_env_action,
                                 stagnation_steps=getattr(env, "steps_since_cover", 0),
                                 recovery_steps=config.get("stagnation_recovery_steps", 180),
+                                min_progress_ratio=(
+                                    config.get("residual_pathbend_min_progress_ratio", 0.35)
+                                    if pathbend_enabled
+                                    else 0.35
+                                ),
+                                guarded_progress_ratio=(
+                                    config.get("residual_pathbend_guarded_progress_ratio", 0.50)
+                                    if pathbend_enabled
+                                    else 0.50
+                                ),
+                                allow_backtrack_steps=(
+                                    config.get("residual_pathbend_allow_backtrack_steps", 0.0)
+                                    if pathbend_enabled
+                                    else 0.0
+                                ),
                             )
-                        bc_action_for_loss = np.zeros_like(raw_a, dtype=np.float32)
+                        if config.get("residual_supervised_bc", False):
+                            bend_expert_action = residual_bc_controller.act(env, s)
+                            if action_alignment(base_action, bend_expert_action) >= float(config.get("residual_bc_min_alignment", -1.0)):
+                                bc_action_for_loss = residual_bc_target(
+                                    base_action,
+                                    bend_expert_action,
+                                    current_residual_beta,
+                                    mode=config.get("residual_combine_mode", "add"),
+                                )
+                            else:
+                                bc_action_for_loss = np.zeros_like(raw_a, dtype=np.float32)
+                        else:
+                            bc_action_for_loss = np.zeros_like(raw_a, dtype=np.float32)
                     else:
                         a = raw_a
                         bc_action_for_loss = bc_action
@@ -1066,6 +1142,11 @@ def train(config, run_path):
                     "residual_dense_base_policy": str(config.get("residual_dense_base_policy", "")),
                     "residual_beta": float(residual_beta_at_step(config, total_steps)),
                     "residual_effective_beta_mean": float(np.mean(ep_residual_betas)) if ep_residual_betas else 0.0,
+                    "residual_combine_mode": str(config.get("residual_combine_mode", "add")),
+                    "residual_min_alignment": float(config.get("residual_min_alignment", 0.15)),
+                    "residual_pathbend_shield": bool(config.get("residual_pathbend_shield", False)),
+                    "residual_supervised_bc": bool(config.get("residual_supervised_bc", False)),
+                    "residual_bc_policy": str(config.get("residual_bc_policy", "")),
                     "residual_fixed_steps": int(ep_residual_modes.get("fixed", 0)),
                     "residual_lull_steps": int(ep_residual_modes.get("lull", 0)),
                     "residual_sparse_steps": int(ep_residual_modes.get("sparse", 0)),

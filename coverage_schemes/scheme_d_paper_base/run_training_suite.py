@@ -1014,6 +1014,32 @@ _V14_RESCUE = _set_flag_values(
         ("--age-penalty-scale", "3.60"),
     ),
 )
+_V15_PATHBEND = _set_flag_values(
+    _V14_RESCUE,
+    (
+        ("--bc-policy", "deadline_rescue_horizon2"),
+        ("--residual-bc-policy", "dynamic_weighted"),
+        ("--residual-combine-mode", "blend"),
+        ("--residual-min-alignment", "-0.25"),
+        ("--residual-beta", "0.45"),
+        ("--residual-beta-start", "0.12"),
+        ("--residual-beta-end", "0.45"),
+        ("--residual-sparse-beta-scale", "1.05"),
+        ("--residual-lull-beta-scale", "1.10"),
+        ("--residual-charging-beta-scale", "0.95"),
+        ("--residual-dense-beta-scale", "0.55"),
+        ("--residual-burst-beta-scale", "0.45"),
+        ("--residual-emergency-beta-scale", "0.45"),
+        ("--residual-emergency-age-ratio", "0.90"),
+        ("--residual-pathbend-min-progress-ratio", "0.0"),
+        ("--residual-pathbend-guarded-progress-ratio", "0.15"),
+        ("--residual-pathbend-allow-backtrack-steps", "0.20"),
+        ("--residual-bc-min-alignment", "0.10"),
+        ("--bc-supervised-coef", "0.06"),
+        ("--bc-supervised-min-coef", "0.01"),
+        ("--bc-supervised-decay-steps", "500000"),
+    ),
+) + ["--residual-pathbend-shield", "--residual-supervised-bc"]
 METHODS.update({
     "thermal_lstm_spawnhist_latency_v11_no_pred": _replace_flag_value(
         _replace_flag_value(_V11, "--pred-coef", "0.0"),
@@ -1162,6 +1188,7 @@ METHODS.update({
         ),
     ),
     "thermal_lstm_spawnhist_latency_v14_rescue": _V14_RESCUE,
+    "thermal_lstm_spawnhist_latency_v15_pathbend": _V15_PATHBEND,
 })
 
 
