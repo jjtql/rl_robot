@@ -516,9 +516,16 @@ class PPOPolicy:
         self.stagnation_recovery_steps = int(config.get("stagnation_recovery_steps", 180))
         self.recurrent_reset_on_cover = bool(config.get("recurrent_reset_on_cover", True))
         self.recurrent_reset_on_miss = bool(config.get("recurrent_reset_on_miss", True))
+        self.decision_interval = max(int(config.get("ppo_decision_interval", 1) or 1), 1)
+        self.emergency_replan_age_ratio = float(config.get("ppo_emergency_replan_age_ratio", 0.65))
         self.residual_base_policy_name = config.get("residual_base_policy", "risk_aware")
         self.residual_base_policy = build_residual_base_policy(config) if self.residual_policy else None
         self.previous_env_action = None
+        self.cached_action = None
+        self.cache_steps_remaining = 0
+        self.last_spawned_count = 0
+        self.last_covered_count = 0
+        self.last_missed_count = 0
         if self.residual_policy:
             glue = str(config.get("residual_glue", "fixed"))
             if glue == "phase_aware":
@@ -530,14 +537,46 @@ class PPOPolicy:
         self.hx = None
         self.cx = None
         self.previous_env_action = None
+        self.cached_action = None
+        self.cache_steps_remaining = 0
+        self.last_spawned_count = 0
+        self.last_covered_count = 0
+        self.last_missed_count = 0
         if self.residual_base_policy is not None:
             self.residual_base_policy.reset()
 
     def reset_recurrent(self):
         self.hx = None
         self.cx = None
+        self.cached_action = None
+        self.cache_steps_remaining = 0
+
+    def _cache_replan_required(self, env):
+        if self.cached_action is None or self.cache_steps_remaining <= 0:
+            return True
+        spawned = int(getattr(env, "spawned_count", 0))
+        covered = int(getattr(env, "covered_count", 0))
+        missed = int(getattr(env, "missed_count", 0))
+        if spawned > self.last_spawned_count or covered > self.last_covered_count or missed > self.last_missed_count:
+            return True
+        if getattr(env, "steams", None):
+            oldest_age = max(float(steam["age"]) for steam in env.steams)
+            sla_steps = max(int(getattr(env, "response_sla_steps", 0) or getattr(env, "max_steam_age", 1)), 1)
+            if oldest_age / sla_steps >= self.emergency_replan_age_ratio:
+                return True
+        return False
+
+    def _remember_cache_state(self, env):
+        self.last_spawned_count = int(getattr(env, "spawned_count", 0))
+        self.last_covered_count = int(getattr(env, "covered_count", 0))
+        self.last_missed_count = int(getattr(env, "missed_count", 0))
 
     def act(self, env, obs):
+        if self.decision_interval > 1 and not self._cache_replan_required(env):
+            self.cache_steps_remaining -= 1
+            self._remember_cache_state(env)
+            return self.cached_action.copy().astype(np.float32)
+
         with torch.no_grad():
             action, _, _, _, self.hx, self.cx = self.agent.select_action(
                 obs,
@@ -571,7 +610,12 @@ class PPOPolicy:
                     allow_backtrack_steps=float(self.config.get("residual_pathbend_allow_backtrack_steps", 0.0)),
                 )
             self.previous_env_action = action.copy()
-        return action.astype(np.float32)
+        action = action.astype(np.float32)
+        if self.decision_interval > 1:
+            self.cached_action = action.copy()
+            self.cache_steps_remaining = self.decision_interval - 1
+            self._remember_cache_state(env)
+        return action
 
 
 def build_base_policy(kind):
@@ -854,6 +898,27 @@ def material_scoring_enabled(env):
     return bool(getattr(env, "material_observation_enabled", True))
 
 
+def steam_deadline_urgency(env, steam, center_xy=None, elapsed_steps=0.0):
+    center_xy = np.asarray(env.cover_center if center_xy is None else center_xy, dtype=np.float32)
+    xy = np.asarray(steam["pos"][:2], dtype=np.float32)
+    dist = float(np.linalg.norm(xy - center_xy))
+    step_size = max(float(getattr(env, "track_step_size", 0.04)), 1e-6)
+    travel_steps = max(1.0, float(np.ceil(max(dist - env.cover_radius, 0.0) / step_size)))
+    sla_steps = max(int(getattr(env, "response_sla_steps", 0) or getattr(env, "max_steam_age", 1)), 1)
+    age = float(steam["age"])
+    arrival_ratio = float((age + float(elapsed_steps) + travel_steps) / sla_steps)
+    age_ratio = float(age / sla_steps)
+    travel_ratio = float(np.clip(travel_steps / sla_steps, 0.0, 2.0))
+    deadline_pressure = float(np.clip((arrival_ratio - 0.35) / 0.65, 0.0, 2.0))
+    age_pressure = float(np.clip(age_ratio, 0.0, 2.0))
+    thermal_score = thermal_score_at_xy(env, xy)
+    gain = float(getattr(env, "urgency_score_gain", 0.55))
+    travel_penalty = float(getattr(env, "urgency_travel_penalty_gain", 0.25))
+    score = gain * (0.62 * deadline_pressure + 0.28 * age_pressure + 0.10 * thermal_score)
+    score -= travel_penalty * travel_ratio
+    return float(score), travel_steps, arrival_ratio, age_ratio, travel_ratio
+
+
 def select_dynamic_weighted_steam(env):
     if not env.steams:
         return None
@@ -921,6 +986,11 @@ def score_steam(env, steam, center_xy=None, weights=None):
         + weights.get("material", 0.0) * material_score
         + weights.get("reachability", 0.0) * reachability_score
         + weights.get("thermal", 0.0) * thermal_score
+        + (
+            steam_deadline_urgency(env, steam, center_xy)[0]
+            if bool(getattr(env, "urgency_scoring_enabled", False))
+            else 0.0
+        )
     )
 
 
@@ -930,6 +1000,13 @@ def select_receding_horizon_steam(env, horizon=2):
     active = list(env.steams)
     if len(active) == 1:
         return active[0]
+    candidate_count = int(getattr(env, "horizon_urgency_candidates", 0) or 0)
+    if candidate_count > 0 and len(active) > candidate_count:
+        active = sorted(
+            active,
+            key=lambda steam: steam_deadline_urgency(env, steam, env.cover_center)[0],
+            reverse=True,
+        )[: max(int(horizon), candidate_count)]
     horizon = max(1, min(int(horizon), len(active), 4))
     best_route = None
     best_score = -np.inf
@@ -942,6 +1019,9 @@ def select_receding_horizon_steam(env, horizon=2):
 
 
 def score_target_route(env, route):
+    if bool(getattr(env, "edf_route_scoring_enabled", False)):
+        return score_edf_target_route(env, route)
+
     center = np.asarray(env.cover_center, dtype=np.float32).copy()
     elapsed = 0.0
     total = 0.0
@@ -964,6 +1044,48 @@ def score_target_route(env, route):
     if leftovers:
         leftover_age = np.mean([steam["age"] + elapsed for steam in leftovers])
         total -= 0.08 * np.clip(leftover_age / max(env.max_steam_age, 1), 0.0, 2.0)
+    return float(total)
+
+
+def score_edf_target_route(env, route):
+    center = np.asarray(env.cover_center, dtype=np.float32).copy()
+    elapsed = 0.0
+    total = 0.0
+    covered_ids = set()
+    for rank, steam in enumerate(route):
+        xy = steam["pos"][:2]
+        urgency, travel_steps, arrival_ratio, age_ratio, travel_ratio = steam_deadline_urgency(
+            env,
+            steam,
+            center,
+            elapsed_steps=elapsed,
+        )
+        local_score = score_steam(env, steam, center)
+        thermal_score = thermal_score_at_xy(env, xy)
+        late_pressure = float(np.clip(arrival_ratio - 1.0, 0.0, 2.5))
+        slack_bonus = float(np.clip(1.0 - arrival_ratio, 0.0, 1.0))
+        discount = 0.84 ** rank
+        total += discount * (
+            0.48 * local_score
+            + 1.45 * urgency
+            + 0.18 * thermal_score
+            + 0.10 * slack_bonus
+            + 0.22 * np.clip(age_ratio, 0.0, 1.5)
+            - 1.25 * late_pressure
+            - 0.28 * travel_ratio
+            - 0.004 * travel_steps
+        )
+        center = np.asarray(xy, dtype=np.float32).copy()
+        elapsed += travel_steps
+        covered_ids.add(steam.get("id"))
+
+    leftovers = [steam for steam in env.steams if steam.get("id") not in covered_ids]
+    if leftovers:
+        leftover_scores = []
+        for steam in leftovers:
+            urgency, _, arrival_ratio, _, _ = steam_deadline_urgency(env, steam, center, elapsed_steps=elapsed)
+            leftover_scores.append(float(urgency + 0.55 * np.clip(arrival_ratio - 0.75, 0.0, 2.0)))
+        total -= 0.55 * max(leftover_scores) + 0.18 * float(np.mean(leftover_scores))
     return float(total)
 
 

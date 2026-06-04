@@ -63,6 +63,15 @@ def configure_env_from_config(env, config):
     env.active_steam_penalty_scale = float(config.get("active_steam_penalty_scale", env.active_steam_penalty_scale))
     env.age_penalty_scale = float(config.get("age_penalty_scale", env.age_penalty_scale))
     env.material_observation_enabled = bool(config.get("material_observation", True))
+    env.urgency_scoring_enabled = bool(config.get("urgency_scoring", False))
+    env.urgency_attention_sort_enabled = bool(config.get("urgency_attention_sort", False))
+    env.urgency_observation_sort_enabled = bool(config.get("urgency_observation_sort", False))
+    env.edf_route_scoring_enabled = bool(config.get("edf_route_scoring", False))
+    env.horizon_urgency_candidates = int(config.get("horizon_urgency_candidates", 0) or 0)
+    env.urgency_score_gain = float(config.get("urgency_score_gain", env.urgency_score_gain))
+    env.urgency_travel_penalty_gain = float(
+        config.get("urgency_travel_penalty_gain", env.urgency_travel_penalty_gain)
+    )
     env.material_tv_reward_enabled = bool(config.get("material_tv_reward", False))
     env.material_tv_reward_gain = float(config.get("material_tv_reward_gain", env.material_tv_reward_gain))
     env.action_penalty_enabled = bool(config.get("action_smoothing_penalty", True))
@@ -78,6 +87,15 @@ def configure_env_from_config(env, config):
     )
     env.response_sla_bonus = float(config.get("response_sla_bonus", env.response_sla_bonus))
     env.response_sla_miss_penalty = float(config.get("response_sla_miss_penalty", env.response_sla_miss_penalty))
+    full_spawn_steps = int(config.get("full_session_spawn_steps", 0) or 0)
+    if config.get("full_session_spawn_seconds") is not None:
+        full_spawn_steps = max(int(round(float(config["full_session_spawn_seconds"]) / max(env.metric_step_seconds, 1e-9))), 1)
+    full_drain_steps = int(config.get("full_session_drain_steps", 0) or 0)
+    if config.get("full_session_drain_seconds") is not None:
+        full_drain_steps = max(int(round(float(config["full_session_drain_seconds"]) / max(env.metric_step_seconds, 1e-9))), 1)
+    env.full_session_spawn_limit_steps = max(full_spawn_steps, 0)
+    env.full_session_drain_steps = max(full_drain_steps, 0)
+    env.full_session_end_on_clear = bool(config.get("full_session_end_on_clear", False) or env.full_session_spawn_limit_steps > 0)
     env.action_delay_steps = int(config.get("action_delay_steps", 0))
     env.action_noise_std = float(config.get("action_noise_std", 0.0))
     env.domain_randomization_enabled = bool(config.get("domain_randomization", False))
@@ -142,6 +160,11 @@ def build_arg_parser():
     parser.add_argument("--max-steams", type=int, help="Override active steam capacity after curriculum configuration.")
     parser.add_argument("--decision-dt-seconds", type=float, help="Real high-level control period used to report time metrics.")
     parser.add_argument("--response-sla-seconds", type=float, help="Override response SLA in real high-level control seconds.")
+    parser.add_argument("--full-session-spawn-steps", type=int, help="Steps during which new steam may spawn before terminal drain.")
+    parser.add_argument("--full-session-spawn-seconds", type=float, help="Seconds during which new steam may spawn before terminal drain.")
+    parser.add_argument("--full-session-drain-steps", type=int, help="Maximum drain steps after spawning closes. 0 means no drain cap.")
+    parser.add_argument("--full-session-drain-seconds", type=float, help="Maximum drain seconds after spawning closes. 0 means no drain cap.")
+    parser.add_argument("--full-session-end-on-clear", action="store_true", help="After spawn closes, end eval when all active steam is covered.")
     parser.add_argument("--stochastic", action="store_true")
     parser.add_argument("--demo-mode", action="store_true", help="Keep spawning after success instead of normal termination.")
     return parser
@@ -203,6 +226,12 @@ def evaluate_episode(env, policy, seed, max_steps, demo_mode=False, metric_step_
         "success_count": success_count,
         "spawned_count": spawned_count,
         "missed_count": int(info.get("missed_count", 0)),
+        "steam_count": int(info.get("steam_count", 0)),
+        "full_session_end_on_clear": bool(info.get("full_session_end_on_clear", False)),
+        "full_session_spawn_limit_steps": int(info.get("full_session_spawn_limit_steps", 0)),
+        "full_session_drain_steps": int(info.get("full_session_drain_steps", 0)),
+        "full_session_spawn_closed": bool(info.get("full_session_spawn_closed", False)),
+        "full_session_terminal_clear": bool(info.get("full_session_terminal_clear", False)),
         "cover_latency": cover_latency_steps,
         "last_cover_latency": float(info.get("last_cover_latency", 0.0)),
         "cover_latency_p50": float(info.get("cover_latency_p50", 0.0)),
@@ -218,6 +247,9 @@ def evaluate_episode(env, policy, seed, max_steps, demo_mode=False, metric_step_
         "response_sla_success_count": int(info.get("response_sla_success_count", 0)),
         "response_sla_miss_count": int(info.get("response_sla_miss_count", 0)),
         "response_sla_success_rate": float(info.get("response_sla_success_rate", 0.0)),
+        "strict_response_sla_success_rate": float(info.get("strict_response_sla_success_rate", 0.0)),
+        "effective_coverage_rate": float(info.get("effective_coverage_rate", 0.0)),
+        "pending_steam_count": int(info.get("pending_steam_count", 0)),
         "active_steam_mean": float(info.get("active_steam_mean", 0.0)),
         "active_steam_max": int(info.get("active_steam_max", 0)),
         "oldest_active_age": float(info.get("oldest_active_age", 0.0)),
@@ -315,6 +347,16 @@ def main():
         config["decision_dt_seconds"] = args.decision_dt_seconds
     if args.response_sla_seconds is not None:
         config["response_sla_seconds"] = args.response_sla_seconds
+    if args.full_session_spawn_steps is not None:
+        config["full_session_spawn_steps"] = args.full_session_spawn_steps
+    if args.full_session_spawn_seconds is not None:
+        config["full_session_spawn_seconds"] = args.full_session_spawn_seconds
+    if args.full_session_drain_steps is not None:
+        config["full_session_drain_steps"] = args.full_session_drain_steps
+    if args.full_session_drain_seconds is not None:
+        config["full_session_drain_seconds"] = args.full_session_drain_seconds
+    if args.full_session_end_on_clear:
+        config["full_session_end_on_clear"] = True
     set_global_seeds(args.seed)
 
     env = ShangZengEnv(
@@ -377,6 +419,8 @@ def main():
             f"Lat:{metrics['cover_latency_seconds']:.3f}s | "
             f"P90:{metrics['cover_latency_p90_seconds']:.3f}s | "
             f"SLA:{metrics['response_sla_success_rate']:.2f} | "
+            f"Eff:{metrics['effective_coverage_rate']:.2f} | "
+            f"Act:{metrics['steam_count']} | "
             f"Rate:{metrics['covered_per_second']:.2f}/s | "
             f"Miss:{metrics['missed_count']}",
             flush=True,
@@ -389,6 +433,9 @@ def main():
         "cover_latency_seconds_mean": float(np.mean([row["cover_latency_seconds"] for row in rows])) if rows else 0.0,
         "cover_latency_p90_seconds_mean": float(np.mean([row["cover_latency_p90_seconds"] for row in rows])) if rows else 0.0,
         "response_sla_success_rate_mean": float(np.mean([row["response_sla_success_rate"] for row in rows])) if rows else 0.0,
+        "effective_coverage_rate_mean": float(np.mean([row["effective_coverage_rate"] for row in rows])) if rows else 0.0,
+        "strict_response_sla_success_rate_mean": float(np.mean([row["strict_response_sla_success_rate"] for row in rows])) if rows else 0.0,
+        "terminal_clear_rate": float(np.mean([1.0 if row["full_session_terminal_clear"] else 0.0 for row in rows])) if rows else 0.0,
         "active_steam_mean": float(np.mean([row["active_steam_mean"] for row in rows])) if rows else 0.0,
         "covered_per_second_mean": float(np.mean([row["covered_per_second"] for row in rows])) if rows else 0.0,
         "per_point_cover_speed_mean": float(np.mean([row["per_point_cover_speed"] for row in rows])) if rows else 0.0,

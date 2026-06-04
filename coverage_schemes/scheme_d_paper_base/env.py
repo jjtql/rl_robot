@@ -108,6 +108,12 @@ class ShangZengEnv(gym.Env):
         self.burst_lull_burst_interval_steps = 4
         self.burst_lull_trickle_probability = 0.004
         self.burst_lull_initial_burst = True
+        self.full_session_spawn_limit_steps = 0
+        self.full_session_drain_steps = 0
+        self.full_session_end_on_clear = False
+        self.full_session_spawn_closed = False
+        self.full_session_spawn_closed_step = -1
+        self.full_session_terminal_clear = False
         self.target_selector = "risk_aware"
         self.set_target_selector(target_selector)
         self.base_obs_dim = 35
@@ -118,6 +124,13 @@ class ShangZengEnv(gym.Env):
         self.attention_steam_dim = int(attention_steam_dim)
         if self.attention_steam_dim != 8:
             raise ValueError("attention_steam_dim must be 8 for the current steam feature schema")
+        self.urgency_scoring_enabled = False
+        self.urgency_attention_sort_enabled = False
+        self.urgency_observation_sort_enabled = False
+        self.edf_route_scoring_enabled = False
+        self.horizon_urgency_candidates = 0
+        self.urgency_score_gain = 0.55
+        self.urgency_travel_penalty_gain = 0.25
         self.spawn_history_observation_enabled = bool(spawn_history_observation)
         self.thermal_context_observation_enabled = bool(thermal_context_observation)
         self.route_summary_observation_enabled = bool(route_summary_observation)
@@ -483,6 +496,9 @@ class ShangZengEnv(gym.Env):
         self.burst_lull_pending_count = 0
         self.burst_lull_next_spawn_delay = 0
         self.last_burst_spawn_count = 0
+        self.full_session_spawn_closed = False
+        self.full_session_spawn_closed_step = -1
+        self.full_session_terminal_clear = False
         self.spawned_count = 0
         self.covered_count = 0
         self.missed_count = 0
@@ -625,10 +641,16 @@ class ShangZengEnv(gym.Env):
             self.steps_since_cover = 0
             self._enter_burst_lull_lull()
 
-        terminated = self.covered_count >= self.target_success_count and self.coverage_rate >= self.target_coverage
+        target_terminated = self.covered_count >= self.target_success_count and self.coverage_rate >= self.target_coverage
+        terminated = target_terminated and not self._full_session_enabled()
 
-        # Spawn new steam
-        if not terminated:
+        if self._full_session_should_close_spawn():
+            self._close_full_session_spawn()
+
+        # Spawn new steam while the physical session is still active. In full-session
+        # mode, the last phase is a terminal lull: no new steam appears, and the
+        # controller is judged by how quickly it drains the remaining backlog.
+        if not terminated and self._full_session_spawn_open():
             if self.burst_lull_spawn_enabled:
                 self._maybe_spawn_burst_lull()
             else:
@@ -650,6 +672,11 @@ class ShangZengEnv(gym.Env):
         self._update_material_visualization()
         self.set_cover_marker()
         self._record_response_pressure_metrics()
+
+        if self._full_session_should_close_spawn():
+            self._close_full_session_spawn()
+        if self._full_session_should_terminate():
+            terminated = True
 
         truncated = self.step_count >= self.max_episode_steps
         obs = self._get_obs()
@@ -699,10 +726,59 @@ class ShangZengEnv(gym.Env):
             return 0.0
         return self.response_sla_success_count / self.covered_count
 
+    @property
+    def strict_response_sla_success_rate(self):
+        if self.spawned_count == 0:
+            return 0.0
+        return self.response_sla_success_count / self.spawned_count
+
+    @property
+    def effective_coverage_rate(self):
+        return self.strict_response_sla_success_rate
+
+    @property
+    def pending_steam_count(self):
+        return max(int(self.spawned_count) - int(self.covered_count) - int(self.missed_count), 0)
+
     def cover_latency_percentile(self, percentile):
         if not self.cover_latencies:
             return 0.0
         return float(np.percentile(np.asarray(self.cover_latencies, dtype=np.float32), float(percentile)))
+
+    def _full_session_enabled(self):
+        return bool(self.full_session_end_on_clear) and int(self.full_session_spawn_limit_steps) > 0
+
+    def _full_session_should_close_spawn(self):
+        return (
+            self._full_session_enabled()
+            and not bool(self.full_session_spawn_closed)
+            and int(self.metric_step_count) >= int(self.full_session_spawn_limit_steps)
+        )
+
+    def _close_full_session_spawn(self):
+        if self.full_session_spawn_closed:
+            return
+        self.full_session_spawn_closed = True
+        self.full_session_spawn_closed_step = int(self.metric_step_count)
+        self.burst_lull_pending_count = 0
+        self.burst_lull_next_spawn_delay = 0
+        if self.burst_lull_spawn_enabled:
+            self.burst_lull_phase = "terminal_lull"
+
+    def _full_session_spawn_open(self):
+        return not self._full_session_enabled() or not bool(self.full_session_spawn_closed)
+
+    def _full_session_should_terminate(self):
+        if not self._full_session_enabled() or not bool(self.full_session_spawn_closed):
+            return False
+        if len(self.steams) == 0 and self.burst_lull_pending_count <= 0:
+            self.full_session_terminal_clear = True
+            return True
+        drain_steps = int(self.full_session_drain_steps)
+        if drain_steps > 0 and self.full_session_spawn_closed_step >= 0:
+            if int(self.metric_step_count) - int(self.full_session_spawn_closed_step) >= drain_steps:
+                return True
+        return False
 
     @property
     def valid_material(self):
@@ -785,8 +861,31 @@ class ShangZengEnv(gym.Env):
             "selected_target_material_score": 0.0,
             "selected_target_reachability_score": 0.0,
             "selected_target_thermal_score": 0.0,
+            "selected_target_urgency_score": 0.0,
             "selected_target_risk_score": 0.0,
         }
+
+    def _steam_travel_steps(self, steam, center_xy=None):
+        center_xy = self.cover_center if center_xy is None else np.asarray(center_xy, dtype=np.float32)
+        target_xy = np.asarray(steam["pos"][:2], dtype=np.float32)
+        dist = float(np.linalg.norm(target_xy - center_xy))
+        return max(1.0, float(np.ceil(max(dist - self.cover_radius, 0.0) / max(self.track_step_size, 1e-6))))
+
+    def _steam_urgency_score(self, steam, center_xy=None):
+        center_xy = self.cover_center if center_xy is None else np.asarray(center_xy, dtype=np.float32)
+        travel_steps = self._steam_travel_steps(steam, center_xy)
+        sla_steps = max(int(self.response_sla_steps), 1)
+        age = float(steam["age"])
+        arrival_ratio = float((age + travel_steps) / sla_steps)
+        age_ratio = float(age / sla_steps)
+        travel_ratio = float(np.clip(travel_steps / sla_steps, 0.0, 2.0))
+        deadline_pressure = float(np.clip((arrival_ratio - 0.35) / 0.65, 0.0, 2.0))
+        age_pressure = float(np.clip(age_ratio, 0.0, 2.0))
+        thermal_score = float(np.clip(self._thermal_score_at_xy(steam["pos"][:2]), 0.0, 1.0))
+        return float(
+            self.urgency_score_gain * (0.62 * deadline_pressure + 0.28 * age_pressure + 0.10 * thermal_score)
+            - self.urgency_travel_penalty_gain * travel_ratio
+        )
 
     def _steam_risk_components(self, steam, center_xy=None):
         center_xy = self.cover_center if center_xy is None else np.asarray(center_xy, dtype=np.float32)
@@ -824,6 +923,9 @@ class ShangZengEnv(gym.Env):
                 + 0.10 * reachability_score
                 + 0.20 * thermal_score
             )
+        urgency_score = self._steam_urgency_score(steam, center_xy)
+        if self.urgency_scoring_enabled:
+            risk_score = float(risk_score + urgency_score)
         return {
             "selected_target_id": int(steam.get("id", -1)),
             "selected_target_x": float(cell_xy[0]),
@@ -834,6 +936,7 @@ class ShangZengEnv(gym.Env):
             "selected_target_material_score": material_score,
             "selected_target_reachability_score": reachability_score,
             "selected_target_thermal_score": thermal_score,
+            "selected_target_urgency_score": urgency_score,
             "selected_target_risk_score": risk_score,
         }
 
@@ -876,11 +979,18 @@ class ShangZengEnv(gym.Env):
         features = []
         # Sorted only for determinism; the attention model uses shared per-item
         # embeddings plus pooling, so it does not rely on this order.
-        ranked_steams = sorted(
-            self.steams,
-            key=lambda steam: self._steam_risk_components(steam)["selected_target_risk_score"],
-            reverse=True,
-        )
+        if self.urgency_attention_sort_enabled:
+            ranked_steams = sorted(
+                self.steams,
+                key=lambda steam: self._steam_risk_components(steam)["selected_target_urgency_score"],
+                reverse=True,
+            )
+        else:
+            ranked_steams = sorted(
+                self.steams,
+                key=lambda steam: self._steam_risk_components(steam)["selected_target_risk_score"],
+                reverse=True,
+            )
         for i in range(self.attention_steam_count):
             if i < len(ranked_steams):
                 steam = ranked_steams[i]
@@ -1117,7 +1227,14 @@ class ShangZengEnv(gym.Env):
 
         # 所有蒸汽的相对位置（最多3个）
         steam_feats = []
-        sorted_steams = sorted(self.steams, key=lambda s: np.linalg.norm(self.cover_center - s["pos"][:2]))
+        if self.urgency_observation_sort_enabled:
+            sorted_steams = sorted(
+                self.steams,
+                key=lambda s: self._steam_risk_components(s)["selected_target_urgency_score"],
+                reverse=True,
+            )
+        else:
+            sorted_steams = sorted(self.steams, key=lambda s: np.linalg.norm(self.cover_center - s["pos"][:2]))
         for i in range(3):
             if i < len(sorted_steams):
                 steam = sorted_steams[i]
@@ -1776,6 +1893,9 @@ class ShangZengEnv(gym.Env):
             "response_sla_success_count": int(self.response_sla_success_count),
             "response_sla_miss_count": int(self.response_sla_miss_count),
             "response_sla_success_rate": float(self.response_sla_success_rate),
+            "strict_response_sla_success_rate": float(self.strict_response_sla_success_rate),
+            "effective_coverage_rate": float(self.effective_coverage_rate),
+            "pending_steam_count": int(self.pending_steam_count),
             "active_steam_mean": float(self.active_steam_mean),
             "active_steam_max": int(self.active_steam_max),
             "oldest_active_age": oldest_active_age,
@@ -1810,6 +1930,12 @@ class ShangZengEnv(gym.Env):
             "spawned_count": int(self.spawned_count),
             "steam_count": int(len(self.steams)),
             "steps_since_cover": int(self.steps_since_cover),
+            "full_session_end_on_clear": bool(self.full_session_end_on_clear),
+            "full_session_spawn_limit_steps": int(self.full_session_spawn_limit_steps),
+            "full_session_drain_steps": int(self.full_session_drain_steps),
+            "full_session_spawn_closed": bool(self.full_session_spawn_closed),
+            "full_session_spawn_closed_step": int(self.full_session_spawn_closed_step),
+            "full_session_terminal_clear": bool(self.full_session_terminal_clear),
             "steam_timeout_enabled": bool(self.steam_timeout_enabled),
             "spawn_history_observation_enabled": bool(self.spawn_history_observation_enabled),
             "thermal_context_observation_enabled": bool(self.thermal_context_observation_enabled),

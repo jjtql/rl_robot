@@ -416,6 +416,13 @@ def build_arg_parser():
     parser.add_argument("--thermal-context-observation", action="store_true", help="Append thermal hotspot and spawn-pressure context features.")
     parser.add_argument("--route-summary-observation", action="store_true", help="Append planner-style route summary features.")
     parser.add_argument("--material-map", action="store_true", help="Append a compact material/frontier map and use the attention-map PPO encoder.")
+    parser.add_argument("--urgency-scoring", action="store_true", help="Add EDF-style age/travel-time urgency to steam scoring.")
+    parser.add_argument("--urgency-attention-sort", action="store_true", help="Expose attention steam items in urgency order.")
+    parser.add_argument("--urgency-observation-sort", action="store_true", help="Expose compact steam observations in urgency order.")
+    parser.add_argument("--edf-route-scoring", action="store_true", help="Use deadline-aware scoring inside receding-horizon route planning.")
+    parser.add_argument("--horizon-urgency-candidates", type=int, help="Restrict horizon planning to the top-K urgent steam candidates.")
+    parser.add_argument("--urgency-score-gain", type=float, help="Gain for EDF-style urgency score.")
+    parser.add_argument("--urgency-travel-penalty-gain", type=float, help="Travel-time penalty gain for urgency scoring.")
     parser.add_argument("--material-tv-reward", action="store_true", help="Reward reductions in material hole/TV/overfill loss.")
     parser.add_argument("--material-tv-reward-gain", type=float, help="Gain for material TV/quality shaping.")
     parser.add_argument("--no-lstm", action="store_true", help="Use a feed-forward PPO policy instead of LSTM PPO.")
@@ -444,6 +451,11 @@ def build_arg_parser():
     parser.add_argument("--continuous-session-chunks", type=int, help="Number of episode windows kept inside one physical session.")
     parser.add_argument("--carry-lstm-state-across-chunks", action="store_true", help="Carry LSTM hidden state across continuous-session chunks.")
     parser.add_argument("--lstm-sequence-chunks", type=int, help="Number of episode windows per PPO recurrent training sequence.")
+    parser.add_argument("--full-session-spawn-steps", type=int, help="Steps during which new steam may spawn before the terminal lull/drain phase.")
+    parser.add_argument("--full-session-spawn-seconds", type=float, help="Seconds during which new steam may spawn; converted to steps using decision dt.")
+    parser.add_argument("--full-session-drain-steps", type=int, help="Maximum terminal drain steps after spawning closes. 0 means no drain cap.")
+    parser.add_argument("--full-session-drain-seconds", type=float, help="Maximum terminal drain seconds after spawning closes; converted to steps using decision dt.")
+    parser.add_argument("--full-session-end-on-clear", action="store_true", help="After spawn closes, end only when all active steam has been covered or the drain cap is reached.")
     parser.add_argument("--action-delay-steps", type=int, help="Apply an N-step command delay during training.")
     parser.add_argument("--action-noise-std", type=float, help="Stddev of Gaussian action noise inside the environment.")
     parser.add_argument("--domain-randomization", action="store_true", help="Randomize motion/material parameters at episode reset.")
@@ -499,6 +511,8 @@ def build_arg_parser():
     parser.add_argument("--stagnation-recovery-steps", type=int, help="Steps without coverage before the shield becomes stricter.")
     parser.add_argument("--keep-lstm-state-on-cover", action="store_true", help="Do not reset recurrent state when a steam is covered.")
     parser.add_argument("--keep-lstm-state-on-miss", action="store_true", help="Do not reset recurrent state when a steam is missed.")
+    parser.add_argument("--ppo-decision-interval", type=int, help="Reuse PPO actions for this many eval/demo steps unless an emergency trigger fires.")
+    parser.add_argument("--ppo-emergency-replan-age-ratio", type=float, help="Oldest active steam age / SLA ratio that forces cached PPO replanning.")
     parser.add_argument("--device", help="Training device: auto, cpu, cuda, or cuda:N.")
     parser.add_argument("--bc-episodes", type=int, help="Behavior cloning warm-start episodes.")
     parser.add_argument("--bc-epochs", type=int, help="Behavior cloning epochs.")
@@ -558,6 +572,9 @@ def apply_cli_overrides(config, args):
         "burst_lull_burst_interval_steps",
         "burst_lull_trickle_probability",
         "attention_steam_count",
+        "horizon_urgency_candidates",
+        "urgency_score_gain",
+        "urgency_travel_penalty_gain",
         "residual_base_policy",
         "residual_glue",
         "residual_sparse_base_policy",
@@ -600,6 +617,12 @@ def apply_cli_overrides(config, args):
         "response_sla_miss_penalty",
         "continuous_session_chunks",
         "lstm_sequence_chunks",
+        "full_session_spawn_steps",
+        "full_session_spawn_seconds",
+        "full_session_drain_steps",
+        "full_session_drain_seconds",
+        "ppo_decision_interval",
+        "ppo_emergency_replan_age_ratio",
         "device",
     ):
         value = getattr(args, key)
@@ -625,6 +648,14 @@ def apply_cli_overrides(config, args):
         config["use_lstm"] = True
     if args.material_tv_reward:
         config["material_tv_reward"] = True
+    if args.urgency_scoring:
+        config["urgency_scoring"] = True
+    if args.urgency_attention_sort:
+        config["urgency_attention_sort"] = True
+    if args.urgency_observation_sort:
+        config["urgency_observation_sort"] = True
+    if args.edf_route_scoring:
+        config["edf_route_scoring"] = True
     if args.material_tv_reward_gain is not None:
         config["material_tv_reward_gain"] = args.material_tv_reward_gain
     if args.no_lstm:
@@ -647,6 +678,8 @@ def apply_cli_overrides(config, args):
         config["latency_first_reward"] = True
     if args.carry_lstm_state_across_chunks:
         config["carry_lstm_state_across_chunks"] = True
+    if args.full_session_end_on_clear:
+        config["full_session_end_on_clear"] = True
     if args.domain_randomization:
         config["domain_randomization"] = True
     if args.no_thermal_spawn:
@@ -707,6 +740,15 @@ def configure_env_from_config(env, config):
     env.active_steam_penalty_scale = float(config.get("active_steam_penalty_scale", env.active_steam_penalty_scale))
     env.age_penalty_scale = float(config.get("age_penalty_scale", env.age_penalty_scale))
     env.material_observation_enabled = bool(config.get("material_observation", True))
+    env.urgency_scoring_enabled = bool(config.get("urgency_scoring", False))
+    env.urgency_attention_sort_enabled = bool(config.get("urgency_attention_sort", False))
+    env.urgency_observation_sort_enabled = bool(config.get("urgency_observation_sort", False))
+    env.edf_route_scoring_enabled = bool(config.get("edf_route_scoring", False))
+    env.horizon_urgency_candidates = int(config.get("horizon_urgency_candidates", 0) or 0)
+    env.urgency_score_gain = float(config.get("urgency_score_gain", env.urgency_score_gain))
+    env.urgency_travel_penalty_gain = float(
+        config.get("urgency_travel_penalty_gain", env.urgency_travel_penalty_gain)
+    )
     env.material_tv_reward_enabled = bool(config.get("material_tv_reward", False))
     env.material_tv_reward_gain = float(config.get("material_tv_reward_gain", env.material_tv_reward_gain))
     env.action_penalty_enabled = bool(config.get("action_smoothing_penalty", True))
@@ -725,6 +767,18 @@ def configure_env_from_config(env, config):
     config["decision_dt_seconds"] = float(env.metric_step_seconds)
     env.response_sla_bonus = float(config.get("response_sla_bonus", env.response_sla_bonus))
     env.response_sla_miss_penalty = float(config.get("response_sla_miss_penalty", env.response_sla_miss_penalty))
+    full_spawn_steps = int(config.get("full_session_spawn_steps", 0) or 0)
+    if config.get("full_session_spawn_seconds") is not None:
+        full_spawn_steps = max(int(round(float(config["full_session_spawn_seconds"]) / max(env.metric_step_seconds, 1e-9))), 1)
+    full_drain_steps = int(config.get("full_session_drain_steps", 0) or 0)
+    if config.get("full_session_drain_seconds") is not None:
+        full_drain_steps = max(int(round(float(config["full_session_drain_seconds"]) / max(env.metric_step_seconds, 1e-9))), 1)
+    env.full_session_spawn_limit_steps = max(full_spawn_steps, 0)
+    env.full_session_drain_steps = max(full_drain_steps, 0)
+    env.full_session_end_on_clear = bool(config.get("full_session_end_on_clear", False) or env.full_session_spawn_limit_steps > 0)
+    config["full_session_spawn_steps"] = int(env.full_session_spawn_limit_steps)
+    config["full_session_drain_steps"] = int(env.full_session_drain_steps)
+    config["full_session_end_on_clear"] = bool(env.full_session_end_on_clear)
     env.action_delay_steps = int(config.get("action_delay_steps", 0))
     env.action_noise_std = float(config.get("action_noise_std", 0.0))
     env.domain_randomization_enabled = bool(config.get("domain_randomization", False))
@@ -1044,6 +1098,8 @@ def train(config, run_path):
                 f"Continuous session chunks: {config.get('continuous_session_chunks', 1)} "
                 f"(carry_lstm={config.get('carry_lstm_state_across_chunks', False)}, "
                 f"seq_steps={config.get('recurrent_sequence_steps', config['episode_steps'])})\n"
+                f"Full-session drain: {env.full_session_end_on_clear} "
+                f"(spawn={env.full_session_spawn_limit_steps} steps, drain={env.full_session_drain_steps} steps)\n"
                 f"Action delay/noise: {env.action_delay_steps}/{env.action_noise_std}\n"
                 f"Domain randomization: {env.domain_randomization_enabled}\n"
                 f"Thermal spawn: {env.thermal_spawn_enabled} "
@@ -1072,9 +1128,10 @@ def train(config, run_path):
                 and session_chunks > 1
             )
             session_hx, session_cx = None, None
+            session_chunk_index = 0
 
             for ep_in_stage in range(stage["episodes"]):
-                chunk_index = ep_in_stage % session_chunks
+                chunk_index = session_chunk_index
                 new_session = chunk_index == 0
                 last_session_chunk = chunk_index == session_chunks - 1 or ep_in_stage == stage["episodes"] - 1
                 if new_session:
@@ -1277,6 +1334,11 @@ def train(config, run_path):
                 else:
                     session_hx, session_cx = None, None
 
+                if terminated or last_session_chunk:
+                    session_chunk_index = 0
+                else:
+                    session_chunk_index = min(session_chunk_index + 1, session_chunks - 1)
+
                 global_ep += 1
                 smooth_reward = 0.95 * smooth_reward + 0.05 * ep_r
                 ep_spawned = info.get("spawned_count", 0)
@@ -1321,6 +1383,9 @@ def train(config, run_path):
                     "response_sla_success_count": int(info.get("response_sla_success_count", 0)),
                     "response_sla_miss_count": int(info.get("response_sla_miss_count", 0)),
                     "response_sla_success_rate": float(info.get("response_sla_success_rate", 0.0)),
+                    "strict_response_sla_success_rate": float(info.get("strict_response_sla_success_rate", 0.0)),
+                    "effective_coverage_rate": float(info.get("effective_coverage_rate", 0.0)),
+                    "pending_steam_count": int(info.get("pending_steam_count", 0)),
                     "active_steam_mean": float(info.get("active_steam_mean", 0.0)),
                     "active_steam_max": int(info.get("active_steam_max", 0)),
                     "oldest_active_age": float(info.get("oldest_active_age", 0.0)),
@@ -1380,6 +1445,11 @@ def train(config, run_path):
                     "continuous_session_chunk_index": int(chunk_index + 1),
                     "continuous_session_new": bool(new_session),
                     "carry_lstm_state_across_chunks": bool(carry_session_hidden),
+                    "full_session_end_on_clear": bool(info.get("full_session_end_on_clear", False)),
+                    "full_session_spawn_limit_steps": int(info.get("full_session_spawn_limit_steps", 0)),
+                    "full_session_drain_steps": int(info.get("full_session_drain_steps", 0)),
+                    "full_session_spawn_closed": bool(info.get("full_session_spawn_closed", False)),
+                    "full_session_terminal_clear": bool(info.get("full_session_terminal_clear", False)),
                     "recurrent_sequence_steps": int(config.get("recurrent_sequence_steps", config["episode_steps"])),
                     "recurrent_hidden_resets": int(ep_hidden_resets),
                     "recurrent_cover_resets": int(ep_cover_resets),
@@ -1452,7 +1522,9 @@ def train(config, run_path):
                         f"Dist:{info.get('target_distance', 0):.3f} | "
                         f"Lat:{info.get('cover_latency_seconds', 0):.2f}s "
                         f"P90:{info.get('cover_latency_p90_seconds', 0):.2f}s "
-                        f"SLA:{info.get('response_sla_success_rate', 0):.2f}",
+                        f"SLA:{info.get('response_sla_success_rate', 0):.2f} "
+                        f"Eff:{info.get('effective_coverage_rate', 0):.2f} "
+                        f"Act:{info.get('steam_count', 0)}",
                         flush=True,
                     )
 

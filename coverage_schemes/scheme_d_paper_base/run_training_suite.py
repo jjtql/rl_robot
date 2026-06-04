@@ -1195,6 +1195,63 @@ _V23_RL_GATE_BC = _set_flag_values(
         ("--bc-supervised-decay-steps", "420000"),
     ),
 )
+_V24_URGENCY = _set_flag_values(
+    _V12_FAST
+    + [
+        "--urgency-scoring",
+        "--urgency-attention-sort",
+        "--urgency-observation-sort",
+        "--edf-route-scoring",
+    ],
+    (
+        ("--horizon-urgency-candidates", "6"),
+        ("--urgency-score-gain", "0.46"),
+        ("--urgency-travel-penalty-gain", "0.18"),
+        ("--oldest-active-penalty-gain", "0.56"),
+        ("--backlog-penalty-gain", "0.24"),
+        ("--residual-sparse-beta-scale", "1.15"),
+        ("--residual-lull-beta-scale", "1.25"),
+        ("--residual-charging-beta-scale", "0.90"),
+        ("--residual-dense-beta-scale", "0.20"),
+        ("--residual-burst-beta-scale", "0.10"),
+        ("--stagnation-recovery-steps", "70"),
+    ),
+)
+_V24_URGENCY_CHUNK2 = _set_flag_values(
+    _V24_URGENCY,
+    (
+        ("--ppo-decision-interval", "2"),
+        ("--ppo-emergency-replan-age-ratio", "0.52"),
+    ),
+)
+_V25_ROUTE_URGENCY_SAFE = _set_flag_values(
+    _V12_FAST
+    + [
+        "--urgency-attention-sort",
+        "--urgency-observation-sort",
+        "--edf-route-scoring",
+    ],
+    (
+        ("--horizon-urgency-candidates", "6"),
+        ("--urgency-score-gain", "0.42"),
+        ("--urgency-travel-penalty-gain", "0.20"),
+        ("--oldest-active-penalty-gain", "0.50"),
+        ("--backlog-penalty-gain", "0.22"),
+        ("--residual-sparse-beta-scale", "1.20"),
+        ("--residual-lull-beta-scale", "1.30"),
+        ("--residual-charging-beta-scale", "0.95"),
+        ("--residual-dense-beta-scale", "0.28"),
+        ("--residual-burst-beta-scale", "0.18"),
+        ("--stagnation-recovery-steps", "80"),
+    ),
+)
+_V25_ROUTE_URGENCY_SAFE_CHUNK2 = _set_flag_values(
+    _V25_ROUTE_URGENCY_SAFE,
+    (
+        ("--ppo-decision-interval", "2"),
+        ("--ppo-emergency-replan-age-ratio", "0.55"),
+    ),
+)
 METHODS.update({
     "thermal_lstm_spawnhist_latency_v11_no_pred": _replace_flag_value(
         _replace_flag_value(_V11, "--pred-coef", "0.0"),
@@ -1351,6 +1408,10 @@ METHODS.update({
     "thermal_lstm_spawnhist_latency_v21_sticky_safe": _V21_STICKY_SAFE,
     "thermal_lstm_spawnhist_latency_v22_rl_gate": _V22_RL_GATE,
     "thermal_lstm_spawnhist_latency_v23_rl_gate_bc": _V23_RL_GATE_BC,
+    "thermal_lstm_spawnhist_latency_v24_urgency": _V24_URGENCY,
+    "thermal_lstm_spawnhist_latency_v24_urgency_chunk2": _V24_URGENCY_CHUNK2,
+    "thermal_lstm_spawnhist_latency_v25_route_urgency_safe": _V25_ROUTE_URGENCY_SAFE,
+    "thermal_lstm_spawnhist_latency_v25_route_urgency_safe_chunk2": _V25_ROUTE_URGENCY_SAFE_CHUNK2,
 })
 
 
@@ -1415,6 +1476,11 @@ def build_arg_parser():
     parser.add_argument("--response-sla-miss-penalty", type=float)
     parser.add_argument("--continuous-session-chunks", type=int)
     parser.add_argument("--lstm-sequence-chunks", type=int)
+    parser.add_argument("--full-session-spawn-steps", type=int)
+    parser.add_argument("--full-session-spawn-seconds", type=float)
+    parser.add_argument("--full-session-drain-steps", type=int)
+    parser.add_argument("--full-session-drain-seconds", type=float)
+    parser.add_argument("--full-session-end-on-clear", action="store_true")
     parser.add_argument("--burst-lull-spawn", action="store_true")
     parser.add_argument("--latency-first-reward", action="store_true")
     parser.add_argument("--carry-lstm-state-across-chunks", action="store_true")
@@ -1425,6 +1491,11 @@ def build_arg_parser():
     parser.add_argument("--burst-lull-burst-max", type=int)
     parser.add_argument("--burst-lull-burst-interval-steps", type=int)
     parser.add_argument("--burst-lull-trickle-probability", type=float)
+    parser.add_argument("--horizon-urgency-candidates", type=int)
+    parser.add_argument("--urgency-score-gain", type=float)
+    parser.add_argument("--urgency-travel-penalty-gain", type=float)
+    parser.add_argument("--ppo-decision-interval", type=int)
+    parser.add_argument("--ppo-emergency-replan-age-ratio", type=float)
     parser.add_argument("--device", help="Training device override: auto, cpu, cuda, or cuda:N.")
     parser.add_argument("--output", default="runs/scheme_d_paper_suite/commands.txt")
     parser.add_argument("--execute", action="store_true", help="Run commands sequentially. Intended for long monitored jobs.")
@@ -1509,6 +1580,10 @@ def command_for(args, method, seed):
         ("response_sla_miss_penalty", "--response-sla-miss-penalty"),
         ("continuous_session_chunks", "--continuous-session-chunks"),
         ("lstm_sequence_chunks", "--lstm-sequence-chunks"),
+        ("full_session_spawn_steps", "--full-session-spawn-steps"),
+        ("full_session_spawn_seconds", "--full-session-spawn-seconds"),
+        ("full_session_drain_steps", "--full-session-drain-steps"),
+        ("full_session_drain_seconds", "--full-session-drain-seconds"),
         ("burst_lull_lull_steps", "--burst-lull-lull-steps"),
         ("burst_lull_charge_steps", "--burst-lull-charge-steps"),
         ("burst_lull_sparse_threshold", "--burst-lull-sparse-threshold"),
@@ -1516,6 +1591,11 @@ def command_for(args, method, seed):
         ("burst_lull_burst_max", "--burst-lull-burst-max"),
         ("burst_lull_burst_interval_steps", "--burst-lull-burst-interval-steps"),
         ("burst_lull_trickle_probability", "--burst-lull-trickle-probability"),
+        ("horizon_urgency_candidates", "--horizon-urgency-candidates"),
+        ("urgency_score_gain", "--urgency-score-gain"),
+        ("urgency_travel_penalty_gain", "--urgency-travel-penalty-gain"),
+        ("ppo_decision_interval", "--ppo-decision-interval"),
+        ("ppo_emergency_replan_age_ratio", "--ppo-emergency-replan-age-ratio"),
         ("device", "--device"),
     ):
         value = getattr(args, attr)
@@ -1529,6 +1609,8 @@ def command_for(args, method, seed):
         command.append("--latency-first-reward")
     if args.carry_lstm_state_across_chunks:
         command.append("--carry-lstm-state-across-chunks")
+    if args.full_session_end_on_clear:
+        command.append("--full-session-end-on-clear")
     return command
 
 
