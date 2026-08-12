@@ -24,7 +24,11 @@ cd paper/iccc2026_major_revision
 latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex
 ```
 
-The checked-in `paper.pdf` is exactly five pages.
+The checked-in `paper.pdf` is exactly five pages. The revised source states
+that the MuJoCo integrator uses `0.002 s`, while task actions and service
+metrics use a `0.05 s` decision interval. V12 disables urgency augmentation;
+the reported risk score and Horizon-2 objective therefore use the normalized
+age, distance, reachability, and thermal terms specified in the source.
 
 ## Recompute the statistical tables
 
@@ -38,7 +42,9 @@ The script performs 20,000 crossed bootstrap draws over training seeds, held-out
 
 ## Claim boundary
 
-The strongest supported mechanism result is Full versus the matched absolute-action No-residual controller. Ours versus Horizon-2 is tied in Low, Realistic, and Hard; the Extreme difference is positive before multiplicity correction but is not significant after four-stage Holm correction. The Extreme coverage operating point also has worse latency, strict SLA, and backlog than Horizon-2.
+The principal supported mechanism result is the comparison between the full method and the matched absolute-action No-residual controller. Ours versus Horizon-2 is statistically indistinguishable in Low, Realistic, and Hard; the Extreme difference is positive before multiplicity correction but is not significant after four-stage Holm correction. The Extreme coverage--service trade-off also has higher latency, lower strict SLA, and higher backlog than Horizon-2.
+
+The historical Vanilla LSTM-PPO result is retained as a descriptive diagnostic with an uncertainty interval. A full-budget independent hyperparameter retuning of that baseline was not completed, so the result is excluded from causal comparisons and is not used to support a failure claim about direct PPO.
 
 The remaining major-revision experiment is a separately trained, otherwise matched H3-residual controller. The current H3 result evaluates deterministic planner capacity only, so the manuscript does not claim planner-horizon independence.
 

@@ -7,6 +7,7 @@ This document records the implementation that generated the V12 paper data. It i
 - Simulator: MuJoCo digital twin with an ABB manipulator and a planar coverage center over the vessel workspace.
 - High-level action: `u=[dx,dy,s]` in `[-1,1]^3`; the planar direction is normalized and `s` controls the speed scale.
 - Decision interval: `0.05 s`.
+- MuJoCo integrator timestep: `0.002 s`; task metrics use the `0.05 s` decision interval.
 - Nominal planar step: `0.04` workspace units before speed scaling.
 - A spot is served when the coverage center is within the stage-specific cover radius.
 - Spots persist until covered. `max_steam_age` is an age-normalization constant unless the separately disabled timeout mode is enabled.
@@ -52,7 +53,14 @@ q_i       = 0.40*phi_age + 0.30*phi_dist
           + 0.10*phi_reach + 0.20*phi_therm
 ```
 
+The thermal score is the clipped sum of Gaussian hotspot fields,
+`clip(sum_l a_l exp(-||p-h_l||^2/(2*sigma_h^2)), 0, 1)`, with
+`sigma_h=0.22 m`. V12 disables the optional urgency augmentation, so the
+urgency term is not added to `q_i` or the H2 objective.
+
 The risk-aware heuristic selects the first active spot attaining the maximum score and outputs the normalized planar direction toward it with speed action `s=1`. The stage pattern need not be monotonic because max active count, cover radius, spawn rate, initial load, and age normalization all change together.
+
+When material observation is enabled, the risk weights are `(0.35, 0.25, 0.15, 0.10, 0.15)` for age, distance, material, reachability, and thermal context. The reported V12 protocol disables material observation, so the active weights are `(0.40, 0.30, 0, 0.10, 0.20)`.
 
 ## 4. Horizon-2 Planner
 
@@ -92,7 +100,14 @@ The first target on the highest-scoring route is executed. Strict `>` comparison
 - Auxiliary prediction head: Linear `256 -> 128`, ReLU, Linear `128 -> 2`, tanh.
 - Orthogonal initialization; actor output gain `0.01`.
 
-The recurrent state is retained across the four 800-step chunks of a 3,200-step continuous sequence. It is retained after coverage, reset after a miss, and reset at a new independent sequence/episode.
+Relative target and active-spot coordinates and distances are divided by the
+pot radius; ages use `A_stage`; bounded thermal, material, risk, coverage,
+route, and spawn-readiness features use their physical scales. Joint
+coordinates and end-effector tracking errors remain in simulator units; the
+action is bounded in `[-1,1]`. No running test-set normalizer is used. The
+recurrent state is retained across the four 800-step chunks of a 3,200-step
+continuous sequence and after coverage, reset after a miss, and reset at a new
+independent sequence/episode.
 
 ## 6. Residual Composition and Shield
 
@@ -148,7 +163,8 @@ Main V12 coefficients:
 - backlog penalty gain: `0.20`, normalized by stage max active count and clipped at ratio 2;
 - in-SLA bonus gain: `20.0`; late-SLA penalty gain: `30.0`;
 - action-delta penalty gain: `0.025`; action-L2 penalty gain: `0.004`;
-- success bonus: `30.0`; miss penalty: `28.0` (timeout misses are disabled in the target protocol).
+- success bonus: `30.0`, emitted when the stage target count and target coverage are reached;
+- timeout miss penalty: `28.0`, inactive in V12 because timeout removal is disabled.
 
 The PPO input reward is multiplied by `0.02` and clipped to `[-4,4]`.
 

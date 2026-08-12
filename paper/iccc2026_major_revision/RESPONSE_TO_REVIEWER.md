@@ -12,7 +12,7 @@ We thank the reviewer for the detailed major-revision comments. We agree that th
 4. The primary uncertainty analysis is now a 20,000-draw crossed hierarchical bootstrap over training seeds, evaluation seeds, and episodes, with paired scenarios and Holm correction across stages.
 5. The historical Vanilla LSTM-PPO result is no longer used for causal attribution. The mechanism claim is based on a matched absolute-action ablation that retains the observation, LSTM, H2 warm start, prediction objective, reward, curriculum, and training budget.
 6. The revised results report coverage, covered-only mean and p90 latency, strict SLA over all spawned spots, active backlog, and action smoothness.
-7. The claims have been narrowed: the method is not presented as uniformly superior or faster than Horizon-2. Its strongest supported result is the benefit of the planner-residual action interface relative to the matched absolute-action controller.
+7. The claims have been narrowed: the method is not presented as uniformly superior or faster than Horizon-2. The principal supported mechanism result is the benefit of the planner-residual action interface relative to the matched absolute-action controller.
 
 ## 1. Scope, ICCC Positioning, and Research Questions
 
@@ -36,16 +36,27 @@ The Introduction ends with three questions:
 
 **Reviewer comment:** Define Horizon-2 and risk-aware precisely, report load-bearing parameters, add a component matrix, remove layout commentary, and correct the signed zero.
 
-**Response:** Section II and Table I now report:
+**Response:** Section II, Tables I--II, and Table V(b) now report:
 
-- the risk score and weights: age 0.40, closeness 0.30, reachability 0.10, and thermal context 0.20;
+- the risk score and weights: age 0.40, closeness 0.30, reachability 0.10, and thermal context 0.20 when material observation is disabled; the enabled-material branch uses age 0.35, closeness 0.25, material 0.15, reachability 0.10, and thermal context 0.15;
+- the material-gap definition over reachable grid cells, including the target layer height and deposition-kernel width;
 - the ordered Horizon-$L$ route enumeration, simulated travel-step score, discount, leftover-age term, and first-action execution rule;
 - the 125-dimensional observation, eight target slots, width-128 target embedding, four-head attention, and width-256 LSTM;
 - the residual schedule from 0.03 to 0.20 over 700,000 steps and the six phase multipliers;
-- the shield progress thresholds and guarded blend;
-- all load-bearing reward coefficients, action interval, SLA, stage settings, PPO settings, behavior-cloning warm start, prediction coefficient, training budget, and held-out protocol.
+- the shield alignment threshold, progress margin and ratios, reverse-turn threshold, stagnation threshold, and guarded blend;
+- all load-bearing reward coefficients, action interval, SLA, stage settings, PPO settings, behavior-cloning warm start, prediction coefficient, training budget, and held-out protocol;
+- the fixed 3,200-decision-step evaluation window, disabled timeout and terminal-drain behavior, and terminal `latest_full` checkpoint rule.
 
-Table IV(b) gives the exact action interface and component status of Full, No residual, No attention, No carry, No prediction, and No service. Editorial page-layout commentary has been removed. The Hard-stage difference is printed as `$<0.001$`, not `-0.000`.
+Table V(b) gives the exact action interface and component status of Full, No residual, No attention, No carry, No prediction, and No service. Non-substantive layout discussion has been removed. The Hard-stage difference is printed as `$<0.001$`, not `-0.000`.
+
+The implementation audit also uses the archived V12 `episodes.csv` files. These files contain per-episode reward, coverage, SLA rate, residual scale, recurrent carry/reset counters, prediction-supervision events, and elapsed training steps. They verify curriculum completion and schedule execution; held-out evaluation results are not used for checkpoint selection.
+
+The source now also distinguishes the MuJoCo integrator timestep (`0.002 s`)
+from the high-level decision and metric interval (`0.05 s`), documents the
+Gaussian thermal-score normalization, and states that V12 disables the
+optional urgency augmentation. The success bonus and disabled timeout-miss
+term are reported separately rather than being described as a terminal-clear
+penalty.
 
 ## 4. Planner Mismatch and Horizon Sensitivity
 
@@ -78,7 +89,7 @@ Accordingly, the paper attributes the supported mechanism-level result to the co
 
 **Reviewer comment:** Retune the direct PPO baseline or substantially weaken the conclusion drawn from it.
 
-**Response:** We chose the second option. The historical direct LSTM-PPO result is retained only as background context and is not used in the causal table or headline conclusion. The revised paper makes no claim that direct PPO or LSTM necessarily fails. The matched No-residual experiment is used because it controls the observation, warm start, auxiliary objective, reward, curriculum, and budget.
+**Response:** The historical direct LSTM-PPO result is retained as a descriptive diagnostic with its uncertainty interval, but it is not used in the causal comparison or principal conclusion. The revised paper makes no claim that direct PPO or LSTM necessarily fails. The matched No-residual experiment is used because it controls the observation, warm start, auxiliary objective, reward, curriculum, and budget. A full-budget, independently tuned Vanilla protocol was not completed; consequently, the Vanilla result is excluded from causal comparisons and is interpreted only descriptively. This limitation is now stated explicitly rather than being treated as evidence against direct PPO.
 
 The deterministic comparison set has also been broadened to Horizon-2, Horizon-3, nearest, oldest, distance-age, risk-aware, dynamic-weighted, ACO-TSP, and planner ensemble. This table shows that risk-aware reaches 0.863 Extreme coverage, slightly above our 0.855, which prevents a claim of universal dominance.
 
@@ -103,9 +114,9 @@ The Extreme interval is positive before multiplicity correction, but the four-st
 
 **Reviewer comment:** Define latency/SLA denominators and report service and smoothness metrics, not coverage alone.
 
-**Response:** The revised paper defines coverage as covered/spawned, including active uncleared spots in the denominator. Mean and p90 latency condition on covered spots. Strict SLA is the number covered within 4 s divided by all spawned spots, so uncleared spots count as failures. Backlog is the time-average active count, and smoothness is the mean per-step Euclidean action change.
+**Response:** The revised paper defines coverage as covered/spawned, including active uncleared spots in the denominator. Mean and p90 latency condition on covered spots. Strict SLA is the number covered within 4 s divided by all spawned spots, so uncleared spots count as failures. Backlog is the time-average active count, and smoothness is the mean per-step Euclidean action change. Evaluation uses a fixed 3,200-decision-step window; timeout removal and terminal drain-to-clear are disabled, so these are fixed-horizon persistent-service results rather than complete-session clearance guarantees.
 
-The service table shows that the Extreme coverage increase over H2 is accompanied by mean latency 23.88 s versus 21.38 s, p90 latency 46.01 s versus 39.92 s, backlog 3.81 versus 3.55, strict SLA 0.103 versus 0.128, and action change 0.0289 versus 0.0277. We therefore present the result as a coverage-oriented operating point, not a latency advantage.
+The service table shows that the Extreme coverage increase over H2 is accompanied by mean latency 23.88 s versus 21.38 s, p90 latency 46.01 s versus 39.92 s, backlog 3.81 versus 3.55, strict SLA 0.103 versus 0.128, and action change 0.0289 versus 0.0277. We therefore report a coverage--service trade-off with coverage as the primary objective, not a latency advantage.
 
 ### 6.4 Unseen condition
 
@@ -121,4 +132,4 @@ The service table shows that the Extreme coverage increase over H2 is accompanie
 
 ## Remaining Limitation
 
-The revision fully discloses one unresolved experiment: a separately trained, otherwise matched H3-residual controller. Horizon-3 is currently evaluated as a deterministic planner-capacity baseline only. Because no matched H3-residual result is available, the manuscript does not claim planner-horizon independence. This limitation is preferable to inserting an unsupported or incompletely controlled result.
+The revision fully discloses one unresolved experiment: a separately trained, otherwise matched H3-residual controller. Horizon-3 is currently evaluated as a deterministic planner-capacity baseline only. Because no matched H3-residual result is available, the manuscript does not claim planner-horizon independence. The corresponding scope limitation is stated explicitly rather than inferred from the deterministic H3 comparison.
