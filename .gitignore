@@ -21,3 +21,12 @@ MUJOCO_LOG.TXT
 .idea/
 .DS_Store
 .codex_video_frames/
+
+# LaTeX build intermediates (source PDFs remain trackable)
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.out
+*.xdv

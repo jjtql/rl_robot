@@ -1,0 +1,446 @@
+% !TeX program = pdflatex
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage[hidelinks]{hyperref}
+\usepackage{placeins}
+\usepackage{textcomp}
+\usepackage{xcolor}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Coverage-Oriented Planner-Guided Memory Residual Reinforcement Learning for Robotic Thermal-Spot Coverage}
+
+\author{\IEEEauthorblockN{Jian Jiang, Yihai Mao*}
+\IEEEauthorblockA{\textit{Shenyang Institute of Computing Technology, Chinese Academy of Sciences}\\
+Shenyang, China\\
+\textit{University of Chinese Academy of Sciences}, Beijing, China\\
+449192322@qq.com, myhfree@126.com}
+\thanks{*Corresponding author: Yihai Mao.}}
+
+\maketitle
+
+\begin{abstract}
+Localized steam breakthroughs in a granular thermal-processing vessel appear
+online and remain active until they are covered. We study this persistent
+service problem in a MuJoCo digital twin of an ABB manipulator, where an
+external thermal localization module supplies clustered target positions and
+the robot moves a coverage center over the active spots. A Horizon-2
+receding-horizon planner provides a structured action prior, while an LSTM-PPO
+policy learns a phase-scaled, shielded residual from the active set, spawn
+history, thermal context, and route summaries. We use three training seeds,
+three held-out environment seeds, and five episodes per crossed cell. Relative
+to Horizon-2, coverage is statistically tied in Low, Realistic, and Hard; in
+Extreme it increases from 0.816 to 0.855, with a hierarchical 95\% interval
+for the difference of $[0.003,0.074]$, but the four-stage Holm-adjusted test
+is not significant. A matched absolute-action ablation that retains the
+encoder, warm start, prediction loss, and service reward reduces coverage by
+0.079--0.168 across the four stages. The Extreme gain is accompanied by
+higher latency and backlog. The result is therefore a coverage-oriented
+planner-learning operating point, not a universally faster controller.
+\end{abstract}
+
+\begin{IEEEkeywords}
+robotic coverage, residual reinforcement learning, persistent service,
+coverage path planning, LSTM-PPO, MuJoCo
+\end{IEEEkeywords}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.86\textwidth]{figures/method_framework.pdf}
+\caption{Planner-guided residual control. The online planner remains in the
+action loop; LSTM-PPO supplies a bounded correction and the shield checks local
+progress before the action is sent to the MuJoCo robot.}
+\label{fig:framework}
+\end{figure*}
+
+\section{Introduction}
+This work is motivated by robot-assisted loading and steaming of a granular
+bed. Localized steam breakthroughs are detected by an external thermal sensing
+system, and an ABB manipulator moves a deposition or coverage center over the
+vessel to serve each active location. The simulator supplies target
+coordinates, so the paper evaluates online control and service routing rather
+than camera perception. Targets arrive in spatially clustered burst--lull
+cycles, remain active until covered, and can accumulate while the arm is in
+transit. This makes the task a persistent service problem: geometric travel,
+waiting time, target age, and congestion must be considered together.
+
+The problem is related to coverage path planning~\cite{galceran2013survey},
+coverage control~\cite{cortes2004coverage}, statistical coverage
+~\cite{arslan2019statistical}, and persistent monitoring with stochastic
+arrivals~\cite{yu2015persistent}. It also has a direct connection to
+stochastic dynamic vehicle routing, where online arrivals and waiting time
+determine service quality~\cite{bertsimas1991stochastic,bertsimas1993multiple}.
+Unlike static map coverage, an active spot leaves the queue only after physical
+coverage. Reinforcement learning has been applied to adaptive coverage
+planning~\cite{carvalho2025zeroshot,champagnie2024online}, but a visible-target
+planner is already a strong prior in this task. Residual reinforcement
+learning~\cite{johannink2019residual} and bounded residual control
+~\cite{yan2025ictrl,zhang2023robodact} provide a conservative way to retain
+that prior. The set encoder follows the permutation-invariant motivation of
+Set Transformer~\cite{lee2019settransformer}.
+
+The paper is primarily aligned with ICCC Track 6 (Robotics), with secondary
+links to Track 2 (AI for Engineering) and Track 4 (Machine Learning). We ask:
+\emph{RQ1}: does a bounded residual action interface improve a fixed planner
+relative to a matched absolute-action PPO controller? \emph{RQ2}: how does
+the method compare with alternative planner and heuristic priors? \emph{RQ3}:
+what coverage--service trade-off is created in latency, strict SLA, backlog,
+and smoothness?
+
+Our claims are intentionally narrow. Learning does not replace planning; it
+learns a correction around a competent online route prior. The contributions
+are (i) a persistent thermal-spot service formulation with explicit metric
+denominators, (ii) an LSTM-PPO residual interface with attention, phase-scaled
+authority, and a progress shield, and (iii) a crossed held-out evaluation
+whose uncertainty and component accounting separate the residual interface
+from auxiliary modules.
+
+\section{Task and Method}
+\subsection{Persistent service and metrics}
+Let $\mathcal S_t=\{p_i(t)\}$ be the active spot set, where
+$p_i=(x_i,y_i,a_i)$ contains location and active age, and let
+$c_t=(x_t,y_t)$ be the coverage center. Spot $i$ is served when
+\begin{equation}
+\|c_t-(x_i,y_i)\|_2\le r_{\mathrm{cover}}.
+\end{equation}
+The spot is then removed. Timeout removal is disabled in the reported
+protocol; an uncleared spot remains in the denominator. The action
+$u_t=[\Delta x_t,\Delta y_t,s_t]\in[-1,1]^3$ is issued every $0.05$ s.
+Coverage is
+\begin{equation}
+C=\frac{N_{\mathrm{covered}}}{N_{\mathrm{spawned}}}.
+\end{equation}
+For a covered spot, $T_i=t_i^{\mathrm{cover}}-t_i^{\mathrm{spawn}}$ and
+$\bar T=N_{\mathrm{covered}}^{-1}\sum_iT_i$. Thus mean and p90 latency are
+conditional on covered spots. Strict SLA exposes the uncleared tail:
+\begin{equation}
+C_{\mathrm{SLA}}=\frac{|\{i:T_i\leq T_{\mathrm{SLA}}\}|}{N_{\mathrm{spawned}}},
+\qquad T_{\mathrm{SLA}}=4.0\ \mathrm{s}.
+\end{equation}
+Backlog is the time-average active count and smoothness is
+$\Delta_u=T^{-1}\sum_t\|u_t-u_{t-1}\|_2$. Coverage is the primary objective;
+the other quantities describe its service cost.
+
+\subsection{Planner prior and recurrent residual}
+The interpretable risk score used by the comparator and as a diagnostic is
+\begin{equation}
+q_i=0.40\phi_a+0.30\phi_d+0.10\phi_r+0.20\phi_h,
+\end{equation}
+where $\phi_a$ is normalized age, $\phi_d$ normalized closeness,
+$\phi_r$ normalized reachability, and $\phi_h$ local thermal score, all
+clipped to their stated ranges. The risk-aware baseline greedily selects the
+maximum-$q_i$ target; ties use target index.
+
+Horizon-$L$ enumerates ordered routes of length $\min(L,N_t)$. For route
+$\rho=(i_1,\ldots,i_L)$, the planner simulates travel in steps and uses
+\begin{align}
+g_j &= q_{i_j}+0.45z_j-0.018d_j-0.050(z_j-1)_+,\nonumber\\
+J(\rho) &= \sum_{j=1}^{L}0.82^{j-1}g_j-0.08\bar z_{\mathrm{left}},
+\end{align}
+where $d_j$ is travel steps and $z_j$ is arrival age normalized by the
+stage age scale. H2 uses $L=2$ and executes the first action of the highest
+scoring route; H3 uses the identical objective with $L=3$. Nearest, oldest,
+distance--age, dynamic-weighted, ACO-TSP, and planner-ensemble baselines are
+defined by their names plus the same bounded workspace and service rule.
+
+The observation has $61+8\times8=125$ features. Eight spot slots are embedded
+with a shared width-128 map and four-head masked attention; the global branch
+and set vector feed a one-layer width-256 LSTM. Actor, critic, and a
+two-dimensional spawn-prediction head share this recurrent representation. The
+hidden state is carried across consecutive rollout chunks and coverage events.
+With planner action $u_t^{\mathrm{base}}$ and residual
+$u_t^{\mathrm{res}}=\pi_\theta(o_t,h_t)$, the candidate is
+\begin{align}
+\tilde u_t &= \operatorname{clip}(u_t^{\mathrm{base}}+
+\beta_t k_tu_t^{\mathrm{res}},-1,1),\nonumber\\
+\beta_t &= 0.03+0.17\operatorname{clip}(n_t/700000,0,1).
+\end{align}
+The phase multipliers $(k_t)$ for lull, sparse, charging, mid, dense, and
+burst are $(1.35,1.25,1.00,1.00,0.40,0.25)$. The post-policy shield rejects
+poor alignment, requires at least 0.35 of base one-step progress, and uses a
+0.70-base/0.30-candidate guarded blend with a 0.50 progress ratio. It is a
+local progress filter, not a formal temporal-logic safety guarantee
+~\cite{alshiekh2018shielding}.
+
+The scalarized reward contains time, active-count, mean-age, potential,
+best-progress, coverage, quick-cover, covered-latency, oldest-active,
+backlog, SLA, action-change, action norm, and terminal success/miss terms.
+The load-bearing coefficients are $w_{\mathrm{time}}=(.030,.035,.045,.055)$,
+$w_{\mathrm{active}}=.024$, $w_{\mathrm{age}}=.112$, $w_{\mathrm{cover}}=.70$,
+$w_{\mathrm{quick}}=3.0$, $w_{\mathrm{precision}}=7.8$,
+$w_{\mathrm{potential}}=.65$, $w_{\mathrm{progress}}=.3375$,
+$w_{\mathrm{latency}}=30$, $w_{\mathrm{oldest}}=.45$,
+$w_{\mathrm{backlog}}=.20$, $w_{\mathrm{SLA}}=(20,-30)$,
+$w_{\Delta u}=.025$, $w_{\|u\|}=.004$, and terminal $(+30,-28)$.
+The reward is multiplied by $0.02$ and clipped to $[-4,4]$; hence SLA and
+backlog are preferences, not hard CMDP constraints. Constrained Policy
+Optimization~\cite{achiam2017cpo} is a relevant alternative, but is not used.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.37\columnwidth]{figures/mujoco_environment_snapshot.png}\hfill
+\includegraphics[width=0.60\columnwidth]{figures/mujoco_task_overview.png}
+\caption{MuJoCo ABB workspace (left) and online thermal-spot service task
+(right). The controller moves the green coverage center over clustered spots
+inside the circular vessel.}
+\label{fig:task}
+\end{figure}
+
+\section{Experiments}
+\subsection{Protocol and statistical unit}
+The simulator is a MuJoCo digital twin~\cite{mujoco2012physics} containing an
+ABB arm, a circular vessel, and an externally localized target field. Three
+drifting hotspots generate burst--lull arrivals (70-step lull, 110-step
+charging, then 3--5 spots one at a time every four steps); background weight
+is 0.055 and hotspot strength is 3.8. Table~\ref{tab:stage} gives the four
+load stages. Each learned method uses training seeds $0$--$2$ and disjoint
+evaluation seeds $100$--$102$; each crossed cell has five independent
+3,200-step episodes. The final fixed-curriculum checkpoint is evaluated and
+test seeds are never used for selection. Training uses 921,600 environment
+steps per seed, PPO $(\gamma,\lambda)=(.985,.95)$, learning rate $10^{-5}$,
+one epoch, clip $0.05$, gradient norm $0.35$, H2 behavior-cloning warm start
+for 200 episodes, and prediction coefficient $0.05$ with a 150-step horizon.
+
+We use 20,000 crossed bootstrap draws: training labels, evaluation labels,
+and episodes are resampled at their respective levels, while paired methods
+reuse the same held-out scenarios. Tables report hierarchical 95\% intervals;
+Holm correction is applied across the four stages for each predeclared
+comparison family. This keeps training randomness and environment randomness
+from being treated as 45 independent flat observations.
+
+\begin{table}[t]
+\caption{Stage and training parameters}
+\label{tab:stage}
+\centering\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+Stage & $N_{\max}$ & $r_{\rm cover}$ & $A_{\rm stage}$ & $p_{\rm spawn}$ & cooldown\\
+\midrule
+Low & 3 & .17 & 260 & .006 & 80\\
+Realistic & 4 & .14 & 220 & .010 & 65\\
+Hard & 6 & .12 & 200 & .018 & 48\\
+Extreme & 8 & .10 & 180 & .026 & 36\\
+\midrule
+Obs. / widths & \multicolumn{5}{l}{$125$; spot 128, global/LSTM 256; 4-head attention}\\
+Sequence / update & \multicolumn{5}{l}{$4\times800=3200$; PPO update every 4 chunks}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Coverage and baselines}
+Table~\ref{tab:main} is the primary comparison. Ours is tied with H2 in the
+first three stages. Extreme has the clearest numerical separation, but its
+uncorrected interval does not survive four-stage Holm correction. The full
+baseline landscape in Table~\ref{tab:baselines} prevents an overstrong claim:
+risk-aware is slightly higher than ours in Extreme, while H3 and the planner
+ensemble are competitive in selected stages.
+
+\begin{table}[t]
+\caption{Coverage versus Horizon-2 (hierarchical 95\% CIs)}
+\label{tab:main}
+\centering\scriptsize\setlength{\tabcolsep}{1.5pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Stage & Ours & H2 & $\Delta$ & $\Delta$ CI & $p_{\rm Holm}$\\
+\midrule
+Low & .917 [.906,.929] & .919 [.906,.932] & -.002 & [-.018,.016] & 1.000\\
+Real. & .901 [.884,.922] & .896 [.883,.910] & +.005 & [-.018,.034] & 1.000\\
+Hard & .870 [.844,.894] & .870 [.847,.894] & $<.001$ & [-.040,.033] & 1.000\\
+Extreme & .855 [.828,.881] & .816 [.782,.849] & +.038 & [.003,.074] & .135\\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/main_coverage_ours_vs_horizon2.pdf}
+\caption{Stage-wise coverage with hierarchical 95\% intervals. The separation
+is concentrated in Extreme and is not corrected-significant.}
+\label{fig:coverage}
+\end{figure}
+
+\begin{table*}[t]
+\caption{Mean coverage across the deterministic and learned baseline set}
+\label{tab:baselines}
+\centering\scriptsize\setlength{\tabcolsep}{3.0pt}
+\begin{tabular}{@{}lrrrrp{3.0cm}@{}}
+\toprule
+Method & Low & Real. & Hard & Extreme & Definition\\
+\midrule
+Ours & .917 & .901 & .870 & .855 & H2 + bounded LSTM residual\\
+Horizon-2 & .919 & .896 & .870 & .816 & route enumeration, $L=2$\\
+Horizon-3 & .917 & .927 & .860 & .841 & route enumeration, $L=3$\\
+Nearest & .922 & .887 & .860 & .789 & minimum distance\\
+Oldest & .914 & .890 & .883 & .807 & maximum age\\
+Distance--age & .921 & .896 & .851 & .801 & age / distance\\
+Risk-aware & .924 & .901 & .836 & .863 & maximum $q_i$\\
+Dynamic weighted & .927 & .886 & .865 & .799 & phase-weighted heuristic\\
+ACO-TSP / ensemble & .925/.935 & .893/.899 & .864/.870 & .754/.814 & route / planner mix\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{Action-interface and component evidence}
+The matched no-residual policy retains the same 125-dimensional observation,
+LSTM, H2 behavior-cloning warm start, prediction loss, service reward, and
+training budget. It emits an absolute action, with no planner base or shield.
+This is the causal action-interface comparison; the historical Vanilla
+LSTM-PPO run simultaneously removed residual composition, BC, and prediction,
+so it is not used to claim that LSTM itself fails. Table~\ref{tab:diagnostic_panels}(a)
+reports the matched effect, and panel (b) gives exact component accounting.
+
+\subsection{Service diagnostics and robustness}
+Table~\ref{tab:diagnostic_panels}(c) reports the quantities that coverage alone hides.
+Ours is close to H2 in Low--Hard. In Extreme, the $0.038$ coverage increase
+comes with $2.50$ s higher mean latency, $6.09$ s higher p90, $0.26$ more
+active spots, and lower strict SLA. The reward sweep therefore changes the
+operating point rather than removing the coverage--service trade-off. On an
+unseen higher-density condition, ours obtains .868/.850 in Hard/Extreme and H2
+obtains .888/.825; the intervals overlap, so this is robustness evidence, not
+dominance. H3 is included as a planner-capacity comparator; a separately
+retrained H3-residual controller is outside the present five-page revision and
+is not claimed.
+
+\begin{table*}[t]
+\caption{Mechanism and service evidence: (a) matched residual-interface
+effect, (b) component accounting, and (c) coverage--service diagnostics.}
+\label{tab:diagnostic_panels}
+\centering\scriptsize
+\begin{minipage}[t]{0.485\textwidth}
+\centering
+\textbf{(a) Matched residual-interface effect}\\[2pt]
+\setlength{\tabcolsep}{1.8pt}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Stage & Full & No residual & $\Delta$ & $\Delta$ CI & $p_{\rm Holm}$\\
+\midrule
+Low & .917 & .838 [.712,.915] & +.079 & [.004,.202] & .029\\
+Real. & .901 & .776 [.667,.865] & +.124 & [.036,.223] & .003\\
+Hard & .870 & .726 [.590,.837] & +.144 & [.037,.268] & .011\\
+Extreme & .855 & .687 [.585,.793] & +.168 & [.050,.285] & .003\\
+\bottomrule
+\end{tabular}}\\[9pt]
+\textbf{(b) Exact component accounting}\\[2pt]
+\setlength{\tabcolsep}{2.4pt}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+Variant & Action & Attn. & Carry & Pred. & Svc. & Shield\\
+\midrule
+Full & H2+res. & Y & Y & Y & Y & Y\\
+No residual & absolute & Y & Y & Y & Y & N\\
+No attention & H2+res. & N & Y & Y & Y & Y\\
+No carry & H2+res. & Y & N & Y & Y & Y\\
+No prediction & H2+res. & Y & Y & N & Y & Y\\
+No service & H2+res. & Y & Y & Y & N & Y\\
+\bottomrule
+\end{tabular}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.485\textwidth}
+\centering
+\textbf{(c) Coverage and service diagnostics versus H2}\\[2pt]
+\setlength{\tabcolsep}{2.2pt}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{@{}llrrrrrr@{}}
+\toprule
+Stage & Method & Cov. & Mean lat. (s) & p90 (s) & Strict SLA & Backlog & $\Delta_u$\\
+\midrule
+Low & Ours & .917 & 12.54 & 24.15 & .181 & 2.30 & .0254\\
+ & H2 & .919 & 12.16 & 23.72 & .191 & 2.28 & .0255\\
+Real. & Ours & .901 & 16.04 & 29.70 & .147 & 2.84 & .0261\\
+ & H2 & .896 & 16.52 & 29.45 & .131 & 2.82 & .0258\\
+Hard & Ours & .870 & 19.59 & 38.10 & .127 & 3.49 & .0277\\
+ & H2 & .870 & 19.23 & 35.44 & .121 & 3.43 & .0274\\
+Extreme & Ours & .855 & 23.88 & 46.01 & .103 & 3.81 & .0289\\
+ & H2 & .816 & 21.38 & 39.92 & .128 & 3.55 & .0277\\
+\bottomrule
+\end{tabular}}
+\vspace{5pt}
+
+\raggedright\footnotesize Mean and p90 latency condition on covered spots;
+strict SLA uses all spawned spots. Backlog is mean active count and $\Delta_u$
+is mean per-step action change.
+\end{minipage}
+\end{table*}
+
+\subsection{Qualitative rollout}
+Figure~\ref{fig:trajectory} compares one held-out Realistic episode under the
+same target-generation protocol. Ours/H2 have path lengths 15.37/16.40 and
+25/40 selected-target switches. This example is interpretive only; aggregate
+claims come from the crossed-seed tables.
+
+\begin{figure*}[t]
+\centering
+\begin{tabular}{cc}
+\includegraphics[width=0.38\textwidth]{figures/ours_realistic_trajectory.png} &
+\includegraphics[width=0.38\textwidth]{figures/horizon2_realistic_trajectory.png}\\
+(a) Planner-guided residual PPO & (b) Horizon-2
+\end{tabular}
+\caption{Representative held-out Realistic trajectories; aggregate claims use
+all crossed training/evaluation seed cells.}
+\label{fig:trajectory}
+\end{figure*}
+
+\section{Discussion and Conclusion}
+The strongest supported conclusion is about the action interface, not universal
+planner replacement. Across all stages, removing the planner-residual
+composition lowers coverage under the matched protocol, with corrected
+intervals excluding zero. Against H2 itself, the method is tied in three
+stages and has a positive but uncorrected Extreme difference. The full
+baseline table further shows that the risk-aware heuristic can be better in
+Extreme coverage, although with longer service time. These results support a
+configurable planner-learning architecture rather than a claim of universal
+superiority.
+
+The attribution is narrower than a comparison with the historical direct
+LSTM-PPO run would suggest. That run changed the action interface, removed the
+H2 behavior-cloning warm start, and disabled the prediction objective at the
+same time. Its low coverage therefore cannot identify residualization as the
+cause. The matched no-residual controller is the appropriate mechanism test
+because it retains the observation, recurrent encoder, warm start, prediction
+loss, reward, curriculum, and optimization budget. The auxiliary ablations
+have mixed stage-wise effects; attention, recurrent carry, prediction, and
+service shaping are supporting design choices, not four independently proven
+contributions.
+
+Planner-horizon evidence requires the same care. H3 is a strong deterministic
+comparator and shows that longer lookahead is not uniformly better: it improves
+Realistic and Extreme relative to H2, but not Low or Hard. However, the learned
+residual was trained around H2 actions. The H3 row therefore tests planner
+capacity, not transfer of the learned correction to another base. A matched
+H3-residual training run is required before claiming horizon-independent
+residual gains; the present paper does not make that claim.
+
+The service metrics also clarify why coverage and response speed cannot be
+reported as one number. An active spot that is eventually covered contributes
+to coverage and covered-only latency; an uncleared spot contributes to the
+coverage denominator and strict-SLA failure but has no finite cover latency.
+The $0.05$ s interval converts task age to seconds and is not a measurement of
+network inference time. Future work should use an explicit CMDP or constrained
+assignment when deadlines are hard requirements, and should train a matched
+H3-residual variant and validate the controller with thermal-camera noise and
+real robot timing.
+
+In summary, this paper presents a reproducible ABB/MuJoCo persistent-service
+benchmark and a planner-guided LSTM-PPO residual controller. The residual
+interface is the most defensible mechanism-level result; the coverage gain in
+Extreme is useful but statistically bounded and paid for with latency and
+backlog. The revised evidence and definitions are intended to make that
+trade-off explicit and reproducible.
+
+\FloatBarrier
+\IEEEtriggeratref{8}
+\bibliographystyle{IEEEtran}
+\bibliography{rl_robot_refs}
+
+\end{document}

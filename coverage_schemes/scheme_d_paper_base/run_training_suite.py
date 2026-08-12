@@ -1299,6 +1299,15 @@ METHODS.update({
         ),
     ),
     "thermal_lstm_spawnhist_latency_v12_fast": _V12_FAST,
+    "thermal_lstm_spawnhist_latency_v12_fast_horizon3_residual": _set_flag_values(
+        _V12_FAST,
+        (
+            ("--bc-policy", "horizon3"),
+            ("--residual-base-policy", "horizon3"),
+            ("--residual-sparse-base-policy", "horizon3"),
+            ("--residual-dense-base-policy", "horizon3"),
+        ),
+    ),
     "thermal_lstm_spawnhist_latency_v12_fast_no_pred": _replace_flag_value(
         _replace_flag_value(_V12_FAST, "--pred-coef", "0.0"),
         "--prediction-horizon-steps",
@@ -1342,6 +1351,45 @@ METHODS.update({
             "--residual-beta-start",
             "--residual-beta-end",
             "--residual-beta-warmup-steps",
+        ),
+    ),
+    "thermal_lstm_spawnhist_latency_v12_fast_vanilla_lstm_ppo": _set_flag_values(
+        _drop_flags(
+            _V12_FAST,
+            flags=("--residual-policy", "--residual-action-shield"),
+            value_flags=(
+                "--residual-base-policy",
+                "--residual-glue",
+                "--residual-sparse-base-policy",
+                "--residual-dense-base-policy",
+                "--residual-phase-sparse-threshold",
+                "--residual-phase-dense-threshold",
+                "--residual-sparse-beta-scale",
+                "--residual-lull-beta-scale",
+                "--residual-charging-beta-scale",
+                "--residual-dense-beta-scale",
+                "--residual-burst-beta-scale",
+                "--stagnation-recovery-steps",
+                "--residual-beta",
+                "--residual-beta-start",
+                "--residual-beta-end",
+                "--residual-beta-warmup-steps",
+                "--bc-policy",
+            ),
+        )
+        + ["--no-bc"],
+        (
+            ("--bc-supervised-coef", "0.0"),
+            ("--bc-supervised-min-coef", "0.0"),
+            ("--pred-coef", "0.0"),
+            ("--prediction-horizon-steps", "0"),
+        ),
+    ),
+    "thermal_lstm_spawnhist_latency_v12_fast_no_lstm_residual": _set_flag_values(
+        _V12_FAST + ["--no-lstm"],
+        (
+            ("--pred-coef", "0.0"),
+            ("--prediction-horizon-steps", "0"),
         ),
     ),
     "thermal_lstm_spawnhist_latency_v13_deadline": _V13_DEADLINE,

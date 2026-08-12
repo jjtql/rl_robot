@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>探气上甑动态覆盖控制台</title>
+  <link rel="stylesheet" href="styles.css?v=20260810-real-replay-v3">
+  <script defer src="app.js?v=20260810-real-replay-v3"></script>
+  <script async src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"
+    onload="window.dispatchEvent(new Event('lucide-ready'))"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="主导航">
+      <div class="brand">
+        <span class="brand-mark"><i data-lucide="scan-line" aria-hidden="true"></i></span>
+        <span class="brand-copy">
+          <strong>探气上甑</strong>
+          <small>Coverage Console</small>
+        </span>
+      </div>
+
+      <nav class="primary-nav">
+        <button class="nav-item is-active" type="button" data-view="live" title="实时作业">
+          <i data-lucide="monitor-dot" aria-hidden="true"></i><span>实时作业</span>
+        </button>
+        <button class="nav-item" type="button" data-view="algorithm" title="算法配置">
+          <i data-lucide="sliders-horizontal" aria-hidden="true"></i><span>算法配置</span>
+        </button>
+        <button class="nav-item" type="button" data-view="experiments" title="实验评估">
+          <i data-lucide="chart-no-axes-combined" aria-hidden="true"></i><span>实验评估</span>
+        </button>
+        <button class="nav-item" type="button" data-view="diagnostics" title="系统诊断">
+          <i data-lucide="activity" aria-hidden="true"></i><span>系统诊断</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-status">
+        <div class="status-line"><span class="status-dot status-dot--ok"></span><span id="replay-source-status">真实轨迹待载入</span></div>
+        <small>V12 rollout · dt 0.05 s</small>
+      </div>
+    </aside>
+
+    <main class="main-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">ABB / MuJoCo Digital Twin</p>
+          <h1 id="view-title">实时作业</h1>
+        </div>
+        <div class="topbar-actions">
+          <div class="source-switch" role="group" aria-label="数据源">
+            <button class="source-option is-selected" type="button" data-source="simulation">真实 Rollout</button>
+            <button class="source-option" type="button" data-source="realtime" disabled title="等待 ROS 接口">实时接口</button>
+          </div>
+          <div class="clock-block">
+            <i data-lucide="clock-3" aria-hidden="true"></i>
+            <span id="system-clock">--:--:--</span>
+          </div>
+        </div>
+      </header>
+
+      <section class="view is-active" id="view-live" aria-labelledby="view-title">
+        <div class="replay-notice" id="replay-notice">
+          <i data-lucide="database" aria-hidden="true"></i>
+          <span id="replay-notice-text"><b>数据来源：</b>V12 checkpoint 的 MuJoCo 单次 held-out rollout。这里展示真实轨迹，但单次轨迹不代表论文多 seed 均值。</span>
+        </div>
+        <div class="control-strip">
+          <div class="control-group">
+            <span class="control-label">场景</span>
+            <div class="segmented" role="group" aria-label="场景选择">
+              <button type="button" data-stage="low">Low</button>
+              <button type="button" data-stage="realistic">Realistic</button>
+              <button class="is-selected" type="button" data-stage="hard">Hard</button>
+              <button type="button" data-stage="extreme">Extreme</button>
+            </div>
+          </div>
+          <label class="select-field">
+            <span>方法 / 消融</span>
+            <select id="policy-select">
+              <optgroup label="主方法与基线">
+                <option value="ours">完整方法：H2 + LSTM-PPO 残差</option>
+                <option value="horizon2">基线：Horizon-2</option>
+              </optgroup>
+              <optgroup label="论文消融">
+                <option value="no_attention">No attention</option>
+                <option value="no_carry">No carry</option>
+                <option value="no_prediction">No prediction</option>
+                <option value="no_service_reward">No service reward</option>
+                <option value="no_residual">No residual</option>
+              </optgroup>
+            </select>
+          </label>
+          <label class="select-field compact replay-speed-field">
+            <span>回放速度</span>
+            <select id="replay-speed-select">
+              <option value="1">1×</option>
+              <option value="2">2×</option>
+              <option value="4" selected>4×</option>
+              <option value="8">8×</option>
+            </select>
+          </label>
+          <div class="run-controls">
+            <button class="icon-command command-primary" id="start-btn" type="button" title="播放真实轨迹">
+              <i data-lucide="play" aria-hidden="true"></i><span>播放</span>
+            </button>
+            <button class="icon-button" id="pause-btn" type="button" title="暂停回放" aria-label="暂停回放">
+              <i data-lucide="pause" aria-hidden="true"></i>
+            </button>
+            <button class="icon-button" id="reset-btn" type="button" title="重置会话" aria-label="重置会话">
+              <i data-lucide="rotate-ccw" aria-hidden="true"></i>
+            </button>
+            <button class="icon-command command-danger" id="stop-btn" type="button" title="停止回放">
+              <i data-lucide="octagon" aria-hidden="true"></i><span>停止</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="metrics-grid" aria-label="实时指标">
+          <article class="metric-card">
+            <div class="metric-heading"><span>覆盖率</span><i data-lucide="circle-check-big" aria-hidden="true"></i></div>
+            <strong id="metric-coverage">0.0%</strong>
+            <small><span id="metric-covered">0</span> / <span id="metric-spawned">0</span> 已服务（单次）</small>
+          </article>
+          <article class="metric-card">
+            <div class="metric-heading"><span>平均响应</span><i data-lucide="timer" aria-hidden="true"></i></div>
+            <strong id="metric-latency">0.00 s</strong>
+            <small>生成至覆盖</small>
+          </article>
+          <article class="metric-card">
+            <div class="metric-heading"><span>P90 延迟</span><i data-lucide="chart-spline" aria-hidden="true"></i></div>
+            <strong id="metric-p90">0.00 s</strong>
+            <small id="metric-sla-note">SLA 4.0 s</small>
+          </article>
+          <article class="metric-card">
+            <div class="metric-heading"><span>活动积压</span><i data-lucide="list-ordered" aria-hidden="true"></i></div>
+            <strong id="metric-backlog">0</strong>
+            <small>最大 <span id="metric-max-active">6</span> 个</small>
+          </article>
+          <article class="metric-card">
+            <div class="metric-heading"><span>作业阶段</span><i data-lucide="waves" aria-hidden="true"></i></div>
+            <strong class="phase-value" id="metric-phase">待机</strong>
+            <small>会话 <span id="metric-session-time">00:00</span></small>
+          </article>
+        </div>
+
+        <div class="live-layout">
+          <section class="panel workspace-panel">
+            <header class="panel-header">
+              <div>
+                <h2>真实末端覆盖轨迹</h2>
+                <p><span class="live-indicator" id="live-indicator"></span><span id="run-state-text">轨迹加载中</span></p>
+              </div>
+              <div class="workspace-tools">
+                <button class="icon-button" id="center-view-btn" type="button" title="居中视图" aria-label="居中视图"><i data-lucide="focus" aria-hidden="true"></i></button>
+                <button class="icon-button" id="trail-toggle-btn" type="button" title="显示或隐藏轨迹" aria-label="显示或隐藏轨迹"><i data-lucide="route" aria-hidden="true"></i></button>
+              </div>
+            </header>
+            <div class="workspace-canvas-wrap">
+              <canvas id="workspace-canvas" width="1000" height="610" aria-label="机械臂动态覆盖工作区"></canvas>
+              <div class="canvas-badge canvas-badge--left"><span class="status-dot status-dot--ok"></span>MuJoCo 记录数据</div>
+              <div class="canvas-badge canvas-badge--right" id="residual-badge">V12 seed0 · eval seed100</div>
+            </div>
+            <footer class="workspace-legend">
+              <span><b class="legend-shape legend-shape--robot"></b>末端覆盖中心</span>
+              <span><b class="legend-shape legend-shape--steam"></b>活动蒸汽点</span>
+              <span><b class="legend-shape legend-shape--urgent"></b>接近 SLA</span>
+              <span><b class="legend-line"></b>真实执行轨迹</span>
+            </footer>
+          </section>
+
+          <section class="panel queue-panel">
+            <header class="panel-header">
+              <div>
+                <h2>服务队列</h2>
+                <p>按真实活动点年龄排序</p>
+              </div>
+              <span class="count-badge" id="queue-count">0</span>
+            </header>
+            <div class="queue-head" aria-hidden="true"><span>目标</span><span>年龄</span><span>策略</span></div>
+            <div class="queue-list" id="queue-list">
+              <div class="empty-state"><i data-lucide="inbox" aria-hidden="true"></i><span>暂无活动目标</span></div>
+            </div>
+            <div class="queue-summary">
+              <div><span>最老点</span><strong id="oldest-age">0.0 s</strong></div>
+              <div><span>累计 SLA 达标</span><strong id="sla-rate">0%</strong></div>
+            </div>
+          </section>
+        </div>
+
+        <div class="bottom-layout">
+          <section class="panel trend-panel">
+            <header class="panel-header">
+              <div><h2>会话趋势</h2><p>覆盖率与活动积压</p></div>
+              <div class="chart-legend"><span><b class="chart-key chart-key--coverage"></b>覆盖率</span><span><b class="chart-key chart-key--backlog"></b>积压</span></div>
+            </header>
+            <canvas id="trend-canvas" width="920" height="250" aria-label="覆盖率和活动积压趋势"></canvas>
+          </section>
+          <section class="panel event-panel">
+            <header class="panel-header">
+              <div><h2>真实事件流</h2><p>由 rollout 状态变化生成</p></div>
+              <button class="icon-button" id="export-btn" type="button" title="导出会话 JSON" aria-label="导出会话 JSON"><i data-lucide="download" aria-hidden="true"></i></button>
+            </header>
+            <ol class="event-list" id="event-list"></ol>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="view-algorithm" aria-labelledby="view-title">
+        <div class="section-toolbar">
+          <div><h2>Checkpoint 参数</h2><p>当前页面为真实轨迹回放，参数只读</p></div>
+          <div class="toolbar-actions">
+            <span class="status-chip status-chip--ok">V12 SEED0</span>
+          </div>
+        </div>
+
+        <div class="config-grid">
+          <section class="panel settings-panel">
+            <header class="panel-header"><div><h2>残差与服务</h2><p>当前会话参数</p></div><i data-lucide="git-merge" aria-hidden="true"></i></header>
+            <label class="range-field">
+              <span><b>最大残差 β</b><output id="beta-output">0.20</output></span>
+              <input id="beta-range" type="range" min="0" max="0.40" step="0.01" value="0.20" disabled>
+            </label>
+            <label class="range-field">
+              <span><b>密集阶段缩放</b><output id="dense-output">0.40</output></span>
+              <input id="dense-range" type="range" min="0.10" max="1" step="0.05" value="0.40" disabled>
+            </label>
+            <label class="number-field"><span>SLA 响应阈值</span><div><input id="sla-input" type="number" value="4" disabled><em>s</em></div></label>
+            <label class="number-field"><span>高层决策周期</span><div><input id="decision-input" type="number" value="0.05" disabled><em>s</em></div></label>
+          </section>
+
+          <section class="panel settings-panel">
+            <header class="panel-header"><div><h2>观测与保护</h2><p>运行时开关</p></div><i data-lucide="shield-check" aria-hidden="true"></i></header>
+            <label class="toggle-row"><span><b>活动点注意力</b><small>最多 8 个目标</small></span><input id="attention-toggle" type="checkbox" checked disabled><i></i></label>
+            <label class="toggle-row"><span><b>LSTM 状态携带</b><small>连续片段保留</small></span><input id="carry-toggle" type="checkbox" checked disabled><i></i></label>
+            <label class="toggle-row"><span><b>动作安全保护</b><small>裁剪、方向与进度</small></span><input id="shield-toggle" type="checkbox" checked disabled><i></i></label>
+            <label class="toggle-row"><span><b>阶段残差缩放</b><small>sparse / lull / burst / dense</small></span><input id="replan-toggle" type="checkbox" checked disabled><i></i></label>
+          </section>
+
+          <section class="panel config-summary-panel">
+            <header class="panel-header"><div><h2>工作点</h2><p id="config-status">已应用</p></div><span class="status-chip status-chip--ok">VALID</span></header>
+            <dl class="config-summary">
+              <div><dt>基础规划器</dt><dd>Horizon-2</dd></div>
+              <div><dt>学习策略</dt><dd>LSTM-PPO residual</dd></div>
+              <div><dt>目标排序</dt><dd>arrival age + route risk</dd></div>
+              <div><dt>输出动作</dt><dd>[Δx, Δy, s]</dd></div>
+              <div><dt>训练目标</dt><dd>coverage + service</dd></div>
+            </dl>
+          </section>
+        </div>
+
+        <section class="panel pipeline-panel">
+          <header class="panel-header"><div><h2>在线决策链路</h2><p>实线为执行路径，虚线为训练反馈</p></div></header>
+          <div class="pipeline-flow" aria-label="算法管线">
+            <div class="pipeline-node"><i data-lucide="radar" aria-hidden="true"></i><b>Observation</b><span>robot · spots · history</span></div>
+            <i class="pipeline-arrow" data-lucide="arrow-right" aria-hidden="true"></i>
+            <div class="pipeline-split">
+              <div class="pipeline-node pipeline-node--planner"><b>Horizon-2</b><span>base action</span></div>
+              <div class="pipeline-node pipeline-node--policy"><b>LSTM-PPO</b><span>residual action</span></div>
+            </div>
+            <i class="pipeline-arrow" data-lucide="arrow-right" aria-hidden="true"></i>
+            <div class="pipeline-node pipeline-node--fusion"><i data-lucide="combine" aria-hidden="true"></i><b>Phase fusion</b><span>u = ubase + βkures</span></div>
+            <i class="pipeline-arrow" data-lucide="arrow-right" aria-hidden="true"></i>
+            <div class="pipeline-node"><i data-lucide="shield" aria-hidden="true"></i><b>Action shield</b><span>clip · guard · progress</span></div>
+            <i class="pipeline-arrow" data-lucide="arrow-right" aria-hidden="true"></i>
+            <div class="pipeline-node pipeline-node--action"><i data-lucide="move-3d" aria-hidden="true"></i><b>Robot action</b><span>Δx · Δy · speed</span></div>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="view-experiments" aria-labelledby="view-title">
+        <div class="section-toolbar">
+          <div><h2>V12 小论文评估</h2><p>train seeds 0--2 · held-out seeds 100--102</p></div>
+          <label class="select-field compact"><span>指标</span><select id="eval-metric-select"><option value="coverage">覆盖率</option><option value="latency">平均延迟</option><option value="p90">P90 延迟</option></select></label>
+        </div>
+
+        <div class="evaluation-layout">
+          <section class="panel eval-chart-panel">
+            <header class="panel-header"><div><h2 id="eval-chart-title">覆盖率主结果</h2><p>Ours vs Horizon-2</p></div><span class="status-chip">n=9 / n=3</span></header>
+            <canvas id="evaluation-canvas" width="1000" height="430" aria-label="V12 主实验对比图"></canvas>
+          </section>
+          <section class="panel evidence-panel">
+            <header class="panel-header"><div><h2>证据边界</h2><p>Extreme coverage</p></div><i data-lucide="scale" aria-hidden="true"></i></header>
+            <div class="evidence-number"><strong>+3.8</strong><span>个百分点</span></div>
+            <dl>
+              <div><dt>Bootstrap 95% CI</dt><dd>[+1.2, +6.8] pts</dd></div>
+              <div><dt>未校正 p</dt><dd>0.0457</dd></div>
+              <div><dt>Holm 校正</dt><dd>不显著</dd></div>
+              <div><dt>服务代价</dt><dd>P90 +6.09 s</dd></div>
+            </dl>
+          </section>
+        </div>
+
+        <section class="panel results-table-panel">
+          <header class="panel-header"><div><h2>四阶段结果</h2><p>mean ± std</p></div></header>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>Stage</th><th>Ours Cov.</th><th>H2 Cov.</th><th>Δ</th><th>Ours Lat.</th><th>H2 Lat.</th><th>Ours P90</th><th>H2 P90</th></tr></thead>
+              <tbody>
+                <tr><td>Low</td><td>0.917 ± 0.010</td><td>0.919 ± 0.004</td><td class="delta-flat">−0.002</td><td>12.54 s</td><td>12.16 s</td><td>24.15 s</td><td>23.72 s</td></tr>
+                <tr><td>Realistic</td><td>0.901 ± 0.016</td><td>0.896 ± 0.009</td><td class="delta-up">+0.005</td><td>16.04 s</td><td>16.52 s</td><td>29.70 s</td><td>29.45 s</td></tr>
+                <tr><td>Hard</td><td>0.870 ± 0.024</td><td>0.870 ± 0.019</td><td class="delta-flat">−0.000</td><td>19.59 s</td><td>19.23 s</td><td>38.10 s</td><td>35.44 s</td></tr>
+                <tr><td>Extreme</td><td>0.855 ± 0.024</td><td>0.816 ± 0.026</td><td class="delta-up">+0.038</td><td>23.88 s</td><td>21.38 s</td><td>46.01 s</td><td>39.92 s</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel results-table-panel ablation-table-panel">
+          <header class="panel-header">
+            <div><h2>论文消融对比</h2><p>coverage mean ± std；回放按钮打开 seed0 / eval seed100 的 Extreme 轨迹</p></div>
+            <span class="status-chip">5 ablations</span>
+          </header>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>Variant</th><th>Low</th><th>Realistic</th><th>Hard</th><th>Extreme</th><th>轨迹验证</th></tr></thead>
+              <tbody>
+                <tr><td>Main residual PPO</td><td>0.917 ± 0.010</td><td>0.901 ± 0.016</td><td>0.870 ± 0.024</td><td>0.855 ± 0.024</td><td><button class="table-action" type="button" data-replay-policy="ours"><i data-lucide="play" aria-hidden="true"></i><span>回放</span></button></td></tr>
+                <tr><td>No attention</td><td>0.921 ± 0.017</td><td>0.906 ± 0.009</td><td>0.884 ± 0.017</td><td>0.839 ± 0.017</td><td><button class="table-action" type="button" data-replay-policy="no_attention"><i data-lucide="play" aria-hidden="true"></i><span>回放</span></button></td></tr>
+                <tr><td>No carry</td><td>0.915 ± 0.011</td><td>0.903 ± 0.013</td><td>0.873 ± 0.015</td><td>0.848 ± 0.019</td><td><button class="table-action" type="button" data-replay-policy="no_carry"><i data-lucide="play" aria-hidden="true"></i><span>回放</span></button></td></tr>
+                <tr><td>No prediction</td><td>0.922 ± 0.015</td><td>0.909 ± 0.015</td><td>0.873 ± 0.016</td><td>0.849 ± 0.018</td><td><button class="table-action" type="button" data-replay-policy="no_prediction"><i data-lucide="play" aria-hidden="true"></i><span>回放</span></button></td></tr>
+                <tr><td>No service reward</td><td>0.926 ± 0.013</td><td>0.904 ± 0.015</td><td>0.862 ± 0.022</td><td>0.849 ± 0.025</td><td><button class="table-action" type="button" data-replay-policy="no_service_reward"><i data-lucide="play" aria-hidden="true"></i><span>回放</span></button></td></tr>
+                <tr><td>No residual</td><td>0.838 ± 0.094</td><td>0.776 ± 0.091</td><td>0.726 ± 0.117</td><td>0.687 ± 0.092</td><td><button class="table-action" type="button" data-replay-policy="no_residual"><i data-lucide="play" aria-hidden="true"></i><span>回放</span></button></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <div class="media-layout">
+          <figure class="panel media-figure">
+            <img src="assets/mujoco_environment_snapshot.png" alt="MuJoCo 机械臂和甑桶仿真环境">
+            <figcaption><b>MuJoCo 仿真环境</b><span>ABB 机械臂 · 甑桶 · 动态热区</span></figcaption>
+          </figure>
+          <figure class="panel media-figure media-figure--wide">
+            <img src="assets/trajectory_comparison_multi_realistic.png" alt="Realistic 场景轨迹对比">
+            <figcaption><b>Realistic 代表性轨迹</b><span>Horizon-2 16.40 · Ours 15.37</span></figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="view" id="view-diagnostics" aria-labelledby="view-title">
+        <div class="section-toolbar">
+          <div><h2>系统运行状态</h2><p>仿真、策略、保护与日志链路</p></div>
+          <button class="icon-command" id="diagnostic-refresh-btn" type="button"><i data-lucide="refresh-cw" aria-hidden="true"></i><span>重新检测</span></button>
+        </div>
+
+        <div class="diagnostic-grid">
+          <section class="panel module-panel">
+            <header class="panel-header"><div><h2>模块健康度</h2><p id="diagnostic-time">最后检测 --:--:--</p></div><span class="status-chip status-chip--ok">6 / 6</span></header>
+            <ul class="module-list">
+              <li><span class="module-icon"><i data-lucide="box" aria-hidden="true"></i></span><div><b>MuJoCo rollout</b><small>trajectory.csv · eval seed100</small></div><span class="module-state module-state--ok">已载入</span></li>
+              <li><span class="module-icon"><i data-lucide="route" aria-hidden="true"></i></span><div><b>Horizon-2 规划器</b><small>base action available</small></div><span class="module-state module-state--ok">正常</span></li>
+              <li><span class="module-icon"><i data-lucide="brain-circuit" aria-hidden="true"></i></span><div><b>LSTM-PPO checkpoint</b><small>V12 seed0 · deterministic</small></div><span class="module-state module-state--ok">已载入</span></li>
+              <li><span class="module-icon"><i data-lucide="shield-check" aria-hidden="true"></i></span><div><b>动作保护</b><small>clip · guard · progress</small></div><span class="module-state module-state--ok">启用</span></li>
+              <li><span class="module-icon"><i data-lucide="database" aria-hidden="true"></i></span><div><b>指标记录</b><small>CSV / JSON session log</small></div><span class="module-state module-state--ok">正常</span></li>
+              <li><span class="module-icon"><i data-lucide="radio" aria-hidden="true"></i></span><div><b>ROS 实时接口</b><small>hardware bridge reserved</small></div><span class="module-state module-state--idle">待接入</span></li>
+            </ul>
+          </section>
+
+          <section class="panel timing-panel">
+            <header class="panel-header"><div><h2>计算时序</h2><p>当前基准</p></div><i data-lucide="gauge" aria-hidden="true"></i></header>
+            <div class="timing-row"><span>策略动作均值</span><strong>6.8 ms</strong><meter min="0" max="50" value="6.8"></meter></div>
+            <div class="timing-row"><span>策略动作 P90</span><strong>8.5 ms</strong><meter min="0" max="50" value="8.5"></meter></div>
+            <div class="timing-row"><span>环境步进均值</span><strong>3.6 ms</strong><meter min="0" max="50" value="3.6"></meter></div>
+            <div class="timing-row"><span>决策预算</span><strong>50.0 ms</strong><meter min="0" max="50" value="50"></meter></div>
+            <div class="budget-summary"><i data-lucide="circle-check" aria-hidden="true"></i><span>计算链路满足高层决策周期</span></div>
+          </section>
+
+          <section class="panel interface-panel">
+            <header class="panel-header"><div><h2>接口映射</h2><p>后端集成边界</p></div><i data-lucide="network" aria-hidden="true"></i></header>
+            <dl class="interface-list">
+              <div><dt>回放</dt><dd>trajectory.csv / summary.json</dd></div>
+              <div><dt>训练代码</dt><dd>ShangZengEnv + PPOPolicy</dd></div>
+              <div><dt>规划器</dt><dd>select_action(state)</dd></div>
+              <div><dt>指标</dt><dd>finalize() / export()</dd></div>
+              <div><dt>实机</dt><dd>ROS bridge / MoveIt!</dd></div>
+            </dl>
+          </section>
+        </div>
+
+        <section class="panel alert-panel">
+          <header class="panel-header"><div><h2>风险与告警</h2><p>当前会话</p></div><span class="status-chip status-chip--warn" id="alert-count">1 项关注</span></header>
+          <div class="alert-row alert-row--warn"><i data-lucide="triangle-alert" aria-hidden="true"></i><div><b>Extreme 服务尾部</b><span>当前论文结果 P90 46.01 s，高于 15 s 服务目标。</span></div><time>实验诊断</time></div>
+          <div class="alert-row"><i data-lucide="info" aria-hidden="true"></i><div><b>实机接口未启用</b><span>当前界面运行浏览器仿真，未发送机械臂动作。</span></div><time>系统状态</time></div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

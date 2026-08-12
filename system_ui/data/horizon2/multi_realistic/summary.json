@@ -1,0 +1,20 @@
+{
+  "cover_latency_p90_seconds": 29.05,
+  "cover_latency_seconds": 15.623076923076923,
+  "coverage_rate": 0.896551724137931,
+  "effective_coverage_rate": 0.13793103448275862,
+  "full_session_terminal_clear": false,
+  "max_steams": 4,
+  "missed_count": 0,
+  "pending_steam_count": 3,
+  "policy": "horizon2",
+  "response_sla_success_rate": 0.15384615384615385,
+  "seed": 100,
+  "spawned_count": 29,
+  "stage": "multi_realistic",
+  "steps": 3200,
+  "strict_response_sla_success_rate": 0.13793103448275862,
+  "success_count": 26,
+  "target_selector": "risk_aware",
+  "total_reward": -4808.7648995234995
+}

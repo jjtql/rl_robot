@@ -25,6 +25,29 @@ The latest implementation plan is documented in `docs/latency-first-continuous-s
 
 Generated runs, checkpoints, virtual environments, and local editor files are intentionally excluded.
 
+## ICCC 2026 Major Revision
+
+The five-page revised manuscript, reviewer response, corrected hierarchical statistics, and episode-level evaluation data are available in:
+
+```text
+paper/iccc2026_major_revision/
+```
+
+Recompute the reported hierarchical tables with:
+
+```bash
+python paper/iccc2026_major_revision/recompute_hierarchical_stats.py
+```
+
+The interactive real-rollout viewer is self-contained and does not require trained weights:
+
+```bash
+python3 -m http.server 8765 --bind 127.0.0.1
+# open http://127.0.0.1:8765/system_ui/
+```
+
+See `system_ui/README.md` for remote access and replay-generation instructions, and `docs/model-weights.md` for the checkpoint publication policy.
+
 ## Environment
 
 Python 3.8+ is recommended. The original experiments used a local virtual environment named `mujoco_rl_env`.

@@ -39,6 +39,7 @@ def steam_snapshot(env):
 
 
 def record_row(step, reward, env, info):
+    metric_step_seconds = float(getattr(env, "metric_step_seconds", 1.0) or 1.0)
     return {
         "step": step,
         "reward": float(reward),
@@ -56,10 +57,28 @@ def record_row(step, reward, env, info):
         "route_confidence": float(info.get("route_confidence", 0.0)),
         "route_stagnation_score": float(info.get("route_stagnation_score", 0.0)),
         "coverage_rate": float(info.get("coverage_rate", 0.0)),
+        "effective_coverage_rate": float(info.get("effective_coverage_rate", 0.0)),
+        "cover_latency_seconds": float(
+            info.get("cover_latency_seconds", float(info.get("cover_latency", 0.0)) * metric_step_seconds)
+        ),
+        "cover_latency_p90_seconds": float(
+            info.get("cover_latency_p90_seconds", float(info.get("cover_latency_p90", 0.0)) * metric_step_seconds)
+        ),
+        "response_sla_success_rate": float(info.get("response_sla_success_rate", 0.0)),
+        "strict_response_sla_success_rate": float(info.get("strict_response_sla_success_rate", 0.0)),
         "success_count": int(info.get("success_count", 0)),
         "spawned_count": int(info.get("spawned_count", 0)),
         "missed_count": int(info.get("missed_count", 0)),
         "steam_count": int(info.get("steam_count", 0)),
+        "pending_steam_count": int(info.get("pending_steam_count", 0)),
+        "active_steam_mean": float(info.get("active_steam_mean", 0.0)),
+        "oldest_active_age_max_seconds": float(
+            info.get(
+                "oldest_active_age_max_seconds",
+                float(info.get("oldest_active_age_max", 0.0)) * metric_step_seconds,
+            )
+        ),
+        "full_session_terminal_clear": bool(info.get("full_session_terminal_clear", False)),
         "burst_lull_phase": str(info.get("burst_lull_phase", "")),
         "burst_lull_charge_score": float(info.get("burst_lull_charge_score", 0.0)),
         "burst_lull_lull_remaining": int(info.get("burst_lull_lull_remaining", 0)),
@@ -94,23 +113,41 @@ def write_plots(output_dir, env, rows):
     target_xy = np.array([[row["selected_target_x"], row["selected_target_y"]] for row in rows], dtype=np.float32)
     risk = np.array([row["selected_target_risk_score"] for row in rows], dtype=np.float32)
 
-    fig, ax = plt.subplots(figsize=(6.2, 6.0))
+    fig, ax = plt.subplots(figsize=(6.4, 5.8))
+    fig.subplots_adjust(left=0.11, right=0.82, bottom=0.11, top=0.90)
     circle = plt.Circle(env.pot_center[:2], env.pot_radius, fill=False, linestyle="--", linewidth=1.2, color="0.35")
     ax.add_patch(circle)
     if cover_xy.size:
-        ax.plot(cover_xy[:, 0], cover_xy[:, 1], color="#1f77b4", linewidth=2.0, label="cover path")
-        ax.scatter(cover_xy[0, 0], cover_xy[0, 1], color="#2ca02c", s=45, label="start")
-        ax.scatter(cover_xy[-1, 0], cover_xy[-1, 1], color="#d62728", s=45, label="end")
+        ax.plot(cover_xy[:, 0], cover_xy[:, 1], color="#2563eb", linewidth=1.8, label="cover path")
+        ax.scatter(cover_xy[0, 0], cover_xy[0, 1], color="#16a34a", s=46, edgecolor="white", linewidth=0.6, zorder=4, label="start")
+        ax.scatter(cover_xy[-1, 0], cover_xy[-1, 1], color="#dc2626", s=46, edgecolor="white", linewidth=0.6, zorder=4, label="end")
     if target_xy.size:
-        scatter = ax.scatter(target_xy[:, 0], target_xy[:, 1], c=risk, cmap="magma", s=18, alpha=0.65, label="selected target")
-        fig.colorbar(scatter, ax=ax, label="risk score")
+        scatter = ax.scatter(
+            target_xy[:, 0],
+            target_xy[:, 1],
+            c=risk,
+            cmap="magma",
+            vmin=0.0,
+            vmax=1.0,
+            s=20,
+            alpha=0.72,
+            edgecolor="white",
+            linewidth=0.25,
+            label="selected target",
+        )
+        color_ax = fig.add_axes([0.855, 0.15, 0.035, 0.68])
+        fig.colorbar(scatter, cax=color_ax, label="risk score")
     ax.set_aspect("equal", adjustable="box")
+    margin = float(env.pot_radius) * 1.08
+    ax.set_xlim(float(env.pot_center[0]) - margin, float(env.pot_center[0]) + margin)
+    ax.set_ylim(float(env.pot_center[1]) - margin, float(env.pot_center[1]) + margin)
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.set_title("Cover Trajectory and Selected Targets")
-    ax.legend(loc="best")
-    fig.tight_layout()
+    ax.grid(alpha=0.16, linewidth=0.6)
+    ax.legend(loc="upper right", frameon=True, fontsize=8.5)
     fig.savefig(output_dir / "trajectory.png", dpi=170)
+    fig.savefig(output_dir / "trajectory.pdf")
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(6.2, 5.2))
@@ -129,6 +166,37 @@ def write_plots(output_dir, env, rows):
     ax.set_title("Final Material Height")
     fig.tight_layout()
     fig.savefig(output_dir / "material_heatmap.png", dpi=170)
+    plt.close(fig)
+
+    steps = np.array([row["step"] for row in rows], dtype=np.float32)
+    active = np.array([row["steam_count"] for row in rows], dtype=np.float32)
+    pending = np.array([row["pending_steam_count"] for row in rows], dtype=np.float32)
+    coverage = np.array([row["coverage_rate"] for row in rows], dtype=np.float32)
+    effective = np.array([row["effective_coverage_rate"] for row in rows], dtype=np.float32)
+    latency = np.array([row["cover_latency_seconds"] for row in rows], dtype=np.float32)
+    p90 = np.array([row["cover_latency_p90_seconds"] for row in rows], dtype=np.float32)
+
+    fig, axes = plt.subplots(3, 1, figsize=(7.2, 7.0), sharex=True)
+    axes[0].plot(steps, active, color="#1f77b4", label="active")
+    axes[0].plot(steps, pending, color="#ff7f0e", label="pending/uncleared")
+    axes[0].set_ylabel("steam count")
+    axes[0].legend(loc="upper right")
+
+    axes[1].plot(steps, coverage, color="#2ca02c", label="raw coverage")
+    axes[1].plot(steps, effective, color="#9467bd", label="effective coverage")
+    axes[1].set_ylim(-0.02, 1.02)
+    axes[1].set_ylabel("rate")
+    axes[1].legend(loc="lower right")
+
+    axes[2].plot(steps, latency, color="#d62728", label="mean latency")
+    axes[2].plot(steps, p90, color="#8c564b", label="p90 latency")
+    axes[2].set_xlabel("step")
+    axes[2].set_ylabel("seconds")
+    axes[2].legend(loc="upper left")
+
+    fig.suptitle("Backlog, Coverage, and Response Latency")
+    fig.tight_layout()
+    fig.savefig(output_dir / "backlog_latency.png", dpi=170)
     plt.close(fig)
 
 
@@ -190,6 +258,7 @@ def main():
             break
 
     write_csv(output_dir / "trajectory.csv", rows)
+    metric_step_seconds = float(getattr(env, "metric_step_seconds", 1.0) or 1.0)
     summary = {
         "policy": args.policy,
         "stage": args.stage,
@@ -197,9 +266,20 @@ def main():
         "steps": len(rows) - 1,
         "total_reward": float(total_reward),
         "coverage_rate": float(info.get("coverage_rate", 0.0)),
+        "effective_coverage_rate": float(info.get("effective_coverage_rate", 0.0)),
+        "cover_latency_seconds": float(
+            info.get("cover_latency_seconds", float(info.get("cover_latency", 0.0)) * metric_step_seconds)
+        ),
+        "cover_latency_p90_seconds": float(
+            info.get("cover_latency_p90_seconds", float(info.get("cover_latency_p90", 0.0)) * metric_step_seconds)
+        ),
+        "response_sla_success_rate": float(info.get("response_sla_success_rate", 0.0)),
+        "strict_response_sla_success_rate": float(info.get("strict_response_sla_success_rate", 0.0)),
         "success_count": int(info.get("success_count", 0)),
         "spawned_count": int(info.get("spawned_count", 0)),
         "missed_count": int(info.get("missed_count", 0)),
+        "pending_steam_count": int(info.get("pending_steam_count", 0)),
+        "full_session_terminal_clear": bool(info.get("full_session_terminal_clear", False)),
         "target_selector": env.target_selector,
         "max_steams": env.max_steams,
     }

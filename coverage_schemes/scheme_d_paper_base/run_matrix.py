@@ -29,6 +29,15 @@ def build_arg_parser():
     parser.add_argument("--steps", type=int, default=800)
     parser.add_argument("--decision-dt-seconds", type=float, help="Real high-level control period used to report time metrics.")
     parser.add_argument("--response-sla-seconds", type=float, help="Override response SLA in real high-level control seconds.")
+    parser.add_argument("--action-delay-steps", type=int, help="Override action delay for robustness tests.")
+    parser.add_argument("--action-noise-std", type=float, help="Override action noise for robustness tests.")
+    parser.add_argument("--thermal-background-weight", type=float, help="Override background spawn weight for density tests.")
+    parser.add_argument("--thermal-hotspot-strength", type=float, help="Override thermal hotspot strength for density tests.")
+    parser.add_argument("--thermal-drift-std", type=float, help="Override thermal drift for robustness tests.")
+    parser.add_argument("--thermal-hotspot-count", type=int, help="Override thermal hotspot count for robustness tests.")
+    parser.add_argument("--burst-lull-trickle-probability", type=float, help="Override trickle spawn probability.")
+    parser.add_argument("--domain-randomization", action="store_true", help="Enable domain randomization for robustness tests.")
+    parser.add_argument("--domain-randomization-scale", type=float, help="Override domain randomization scale.")
     parser.add_argument("--output-dir", default="runs/matrix")
     parser.add_argument("--stochastic", action="store_true")
     parser.add_argument("--demo-mode", action="store_true")
@@ -39,7 +48,10 @@ def summarize(rows):
     metrics = [
         "episode_reward",
         "coverage_rate",
+        "effective_coverage_rate",
         "missed_count",
+        "steam_count",
+        "pending_steam_count",
         "cover_latency",
         "cover_latency_seconds",
         "cover_latency_p50_seconds",
@@ -47,6 +59,8 @@ def summarize(rows):
         "cover_latency_p95_seconds",
         "cover_latency_max_seconds",
         "response_sla_success_rate",
+        "strict_response_sla_success_rate",
+        "full_session_terminal_clear",
         "active_steam_mean",
         "active_steam_max",
         "oldest_active_age_max_seconds",
@@ -64,6 +78,8 @@ def summarize(rows):
         "material_hole_loss",
         "material_tv_loss",
         "material_quality_loss",
+        "action_delta_mean",
+        "action_l2_mean",
     ]
     out = {}
     for metric in metrics:
@@ -98,6 +114,21 @@ def main():
         config["decision_dt_seconds"] = args.decision_dt_seconds
     if args.response_sla_seconds is not None:
         config["response_sla_seconds"] = args.response_sla_seconds
+    for attr in (
+        "action_delay_steps",
+        "action_noise_std",
+        "thermal_background_weight",
+        "thermal_hotspot_strength",
+        "thermal_drift_std",
+        "thermal_hotspot_count",
+        "burst_lull_trickle_probability",
+        "domain_randomization_scale",
+    ):
+        value = getattr(args, attr)
+        if value is not None:
+            config[attr] = value
+    if args.domain_randomization:
+        config["domain_randomization"] = True
 
     policies = parse_csv_list(args.policies)
     if "ppo" in policies and not args.model:
