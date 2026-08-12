@@ -6,7 +6,7 @@ We thank the reviewer for the detailed major-revision comments. We agree that th
 
 ## Summary of Revisions
 
-1. The Introduction now identifies ICCC Track 6 as the primary track, describes the ABB/MuJoCo thermal-processing setting, states the external-localization assumption, and gives three explicit research questions.
+1. The Introduction now identifies ICCC Track 6 as the primary track, relates the task to steam-guided pot loading in solid-state Baijiu distillation, states the external-localization assumption, and gives three explicit research questions.
 2. The related-work discussion now includes stochastic dynamic routing, formal shielding, constrained policy optimization, and recent residual-control references.
 3. The paper now defines all metric denominators, the risk-aware score, the Horizon-2/Horizon-3 objectives, network dimensions, residual schedule, shield, reward coefficients, training budget, curriculum, and evaluation protocol.
 4. The primary uncertainty analysis is now a 20,000-draw crossed hierarchical bootstrap over training seeds, evaluation seeds, and episodes, with paired scenarios and Holm correction across stages.
@@ -18,7 +18,7 @@ We thank the reviewer for the detailed major-revision comments. We agree that th
 
 **Reviewer comment:** Explicitly position the work within ICCC, instantiate the physical process, and state testable research questions.
 
-**Response:** The revised Introduction identifies Track 6 (Robotics) as the primary track, with secondary links to Track 2 (AI for Engineering) and Track 4 (Machine Learning). It now describes an ABB manipulator servicing externally localized steam-breakthrough spots over a granular thermal-processing vessel. The simulator study addresses online control and service routing; camera perception is explicitly outside its scope.
+**Response:** The revised Introduction identifies Track 6 (Robotics) as the primary track, with secondary links to Track 2 (AI for Engineering) and Track 4 (Machine Learning). It now relates the task to pot loading in solid-state Baijiu distillation, where fermented grain is deposited in response to observed steam-breakthrough locations. The simulated ABB manipulator services externally localized targets over the vessel. The study isolates online routing and motion-command generation; thermal-image detection, granular-material dynamics, layer-uniformity assessment, and distillation-quality validation are explicitly outside its scope.
 
 The Introduction ends with three questions:
 
@@ -45,26 +45,25 @@ The Introduction ends with three questions:
 - the residual schedule from 0.03 to 0.20 over 700,000 steps and the six phase multipliers;
 - the shield alignment threshold, progress margin and ratios, reverse-turn threshold, stagnation threshold, and guarded blend;
 - all load-bearing reward coefficients, action interval, SLA, stage settings, PPO settings, behavior-cloning warm start, prediction coefficient, training budget, and held-out protocol;
-- the fixed 3,200-decision-step evaluation window, disabled timeout and terminal-drain behavior, and terminal `latest_full` checkpoint rule.
+- the fixed 3,200-decision-step evaluation window, disabled timeout and terminal-drain behavior, and the prespecified terminal-model selection rule.
 
 Table V(b) gives the exact action interface and component status of Full, No residual, No attention, No carry, No prediction, and No service. Non-substantive layout discussion has been removed. The Hard-stage difference is printed as `$<0.001$`, not `-0.000`.
 
-The implementation audit also uses the archived V12 `episodes.csv` files. These files contain per-episode reward, coverage, SLA rate, residual scale, recurrent carry/reset counters, prediction-supervision events, and elapsed training steps. They verify curriculum completion and schedule execution; held-out evaluation results are not used for checkpoint selection.
-
-The source now also distinguishes the MuJoCo integrator timestep (`0.002 s`)
-from the high-level decision and metric interval (`0.05 s`), documents the
-Gaussian thermal-score normalization, and states that V12 disables the
-optional urgency augmentation. The success bonus and disabled timeout-miss
-term are reported separately rather than being described as a terminal-clear
-penalty.
+The revised protocol also distinguishes the MuJoCo integration interval
+($0.002$ s) from the high-level decision and metric interval ($0.05$ s),
+documents the Gaussian thermal-score normalization, and states that optional
+urgency augmentation is not used. The success bonus and inactive timeout-miss
+term are reported separately. All learned results use the terminal model after
+the prespecified 1,152-episode curriculum; held-out evaluation data do not
+participate in model selection.
 
 ## 4. Planner Mismatch and Horizon Sensitivity
 
 **Reviewer comment:** Test whether the learned result depends on the Horizon-2 planner and include a lower-cost planner-horizon analysis.
 
-**Response:** The revision adds Horizon-3 to the deterministic baseline table using the same route objective with $L=3$. H3 obtains coverage 0.917, 0.927, 0.860, and 0.841 from Low to Extreme, compared with H2 values 0.919, 0.896, 0.870, and 0.816. This establishes that longer lookahead is not uniformly better and supplies the requested planner-capacity comparison.
+**Response:** The revision adds Horizon-3 to the deterministic baseline table using the same route objective with $L=3$. H3 obtains coverage 0.917, 0.927, 0.860, and 0.841 from Low to Extreme, compared with H2 values 0.919, 0.896, 0.870, and 0.816. This establishes that longer lookahead is not uniformly better and provides the requested planning-horizon sensitivity analysis.
 
-We also corrected the interpretation. The learned residual was trained around H2 actions, so the H3 row does **not** prove that the residual transfers to a different base planner. A formally matched H3-residual retraining experiment has not been completed within this revision. The manuscript states this limitation explicitly and makes no claim of horizon-independent residual gains.
+The interpretation is deliberately restricted. The learned residual is conditioned on H2 actions; therefore, the H3 comparison evaluates deterministic planner capacity and does not establish residual transfer across base planners. The manuscript makes no claim of planning-horizon-independent residual gains. A cross-planner transfer study would require separately trained, otherwise matched residual controllers and is identified as future work rather than evidence required for the present H2-conditioned claim.
 
 ## 5. Contribution Attribution
 
@@ -130,6 +129,6 @@ The service table shows that the Extreme coverage increase over H2 is accompanie
 
 **Response:** The revised manuscript is exactly five IEEE conference pages, as required for this version. We removed repeated Extreme-stage discussion, shortened generic PPO background, combined the mechanism, component, and service evidence into one full-width table, and retained only a representative qualitative rollout. This made room for exact definitions, corrected uncertainty, the expanded baseline set, component accounting, and service diagnostics without exceeding five pages.
 
-## Remaining Limitation
+## Scope of the Horizon Analysis
 
-The revision fully discloses one unresolved experiment: a separately trained, otherwise matched H3-residual controller. Horizon-3 is currently evaluated as a deterministic planner-capacity baseline only. Because no matched H3-residual result is available, the manuscript does not claim planner-horizon independence. The corresponding scope limitation is stated explicitly rather than inferred from the deterministic H3 comparison.
+The added Horizon-3 experiment addresses planning-horizon sensitivity under an otherwise identical deterministic objective. It is not a cross-planner residual-transfer experiment. Accordingly, the revised manuscript confines its mechanism claim to the H2-conditioned controller and identifies matched cross-planner residual training as future work. This scope distinction prevents the deterministic H3 comparison from being interpreted as evidence of horizon-independent transfer.

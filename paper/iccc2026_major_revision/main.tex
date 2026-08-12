@@ -35,11 +35,12 @@ Shenyang, China\\
 \maketitle
 
 \begin{abstract}
-Localized steam breakthroughs in a granular thermal-processing vessel appear
-online and remain active until they are covered. We study this persistent
-service problem in a MuJoCo digital twin of an ABB manipulator, where an
-external thermal localization module supplies clustered target positions and
-the robot moves a coverage center over the active spots. A Horizon-2
+During pot loading for solid-state Baijiu distillation, localized steam
+breakthroughs indicate where fermented grain should be deposited. We study
+the resulting persistent-service control problem in a MuJoCo digital twin of
+an ABB manipulator. An external thermal-localization module supplies clustered
+target positions, and the robot moves an abstract deposition center over the
+active locations. A Horizon-2
 receding-horizon planner provides a structured action prior, while an LSTM-PPO
 policy learns a phase-scaled, shielded residual from the active set, spawn
 history, thermal context, and route summaries. We use three training seeds,
@@ -70,15 +71,23 @@ progress before the action is sent to the MuJoCo robot.}
 \end{figure*}
 
 \section{Introduction}
-This work is motivated by robot-assisted loading and steaming of a granular
-bed. Localized steam breakthroughs are detected by an external thermal sensing
-system, and an ABB manipulator moves a deposition or coverage center over the
-vessel to serve each active location. The simulator supplies target
-coordinates, so the paper evaluates online control and service routing rather
-than camera perception. Targets arrive in spatially clustered burst--lull
-cycles, remain active until covered, and can accumulate while the arm is in
-transit. This makes the task a persistent service problem: geometric travel,
-waiting time, target age, and congestion must be considered together.
+Pot loading (\emph{shangzeng}) is a critical operation in solid-state Baijiu
+distillation~\cite{wang2024baijiu}. Operators observe steam breakthrough
+locations and deposit fermented grain according to the ``cover upon
+breakthrough'' practice while maintaining a light, uniform layer. Delayed or
+inconsistent deposition can promote steam channeling, leakage, and nonuniform
+loading. In the automated abstraction studied here, an external thermal
+localization system supplies breakthrough coordinates and an ABB manipulator
+moves a deposition center over the vessel. Targets arrive in spatially
+clustered burst--lull cycles, remain active until served, and may accumulate
+while the arm is in transit. The resulting persistent-service problem couples
+geometric travel, waiting time, target age, and congestion.
+
+This paper isolates the online routing and motion-command layer. It does not
+evaluate thermal-image detection accuracy, granular-material dynamics, layer
+uniformity, or final distillation quality. A simulated coverage event therefore
+represents service of a detected breakthrough location rather than a complete
+validation of the physical loading process.
 
 The problem is related to coverage path planning~\cite{galceran2013survey},
 coverage control~\cite{cortes2004coverage}, statistical coverage
@@ -154,7 +163,7 @@ $A_{\mathrm{norm}}$, the components are
 \phi_{\mathrm{reach}}&=1-\operatorname{clip}(\|p_i-p_{\mathrm{home}}\|/R_{\max},0,1),\nonumber\\
 \phi_{\mathrm{therm}}&=\operatorname{clip}(H(p_i),0,1).
 \end{align}
-The implementation also exposes
+For protocols with material-state sensing, the descriptor is
 $\phi_{\mathrm{mat}}=\operatorname{clip}(\operatorname{mean}_g
 [\max(H^*-H_g,0)\exp(-\|x_g-p_i\|^2/(2\sigma_d^2))]/H^*,0,1)$.
 Here $x_g$ is the center of grid cell $g$, $H_g$ is its height, $H^*$ is the
@@ -163,14 +172,13 @@ the mean is taken over the grid.
 The thermal score is
 $H(p)=\operatorname{clip}(\sum_\ell a_\ell\exp(-\|p-h_\ell\|^2/(2\sigma_h^2)),0,1)$,
 where $h_\ell$ and $a_\ell$ are hotspot centers and amplitudes and
-$\sigma_h=0.22$ m. V12 disables urgency augmentation, so it does not enter
-either $q_i$ or the H2 objective.
+$\sigma_h=0.22$ m. Urgency augmentation is disabled in the evaluated protocol,
+so it does not enter either $q_i$ or the H2 objective.
 When material observation is enabled, the weights are
 $(.35,.25,.15,.10,.15)$ for age, distance, material, reachability, and
 thermal context; when it is disabled, they are
 $(.40,.30,0,.10,.20)$.
-The reported V12 protocol sets
-\texttt{material\_observation=false}, hence
+Material-state observation is disabled in the evaluated protocol; hence
 $\phi_{\mathrm{mat}}=0$ and its weight is zero. The risk-aware baseline is
 stateless: it selects the first active-set entry attaining the maximum score
 and outputs the normalized direction toward that target with speed one.
@@ -248,7 +256,7 @@ The scalarized reward contains time, active count, mean age, potential,
 best progress, coverage, quick cover, precision, latency, oldest active,
 backlog, SLA, action change, action norm, miss, and success terms. The
 stage base cover, quick-cover, and potential values are
-$(68,64,62,60)$, $(16,14,12,10)$, and $(8.0,7.5,6.5,5.8)$; the V12 scale
+$(68,64,62,60)$, $(16,14,12,10)$, and $(8.0,7.5,6.5,5.8)$; the reported scale
 factors are $(.70,3.0,.65,.65,.45,2.4,2.8)$ for cover, quick cover,
 precision, potential, best progress, active count, and age. Thus the
 corresponding scaled coefficients are cover $(47.6,44.8,43.4,42.0)$,
@@ -282,7 +290,7 @@ and external target field. Three drifting hotspots generate a 70-step lull,
 110-step charge, then 3--5 spots emitted every four steps; background and
 strength are 0.055 and 3.8. Each learned method uses train seeds $0$--$2$,
 held-out seeds $100$--$102$, five 3,200-decision-step episodes per crossed
-cell, and the terminal checkpoint after a fixed curriculum. The training
+cell, and the terminal model after a prespecified curriculum. The training
 budget is $1,152\times800=921,600$ decision steps per seed. PPO uses
 $(\gamma,\lambda)=(.985,.95)$, Adam with $10^{-5}$ learning rate and
 $\epsilon=10^{-5}$, one epoch, clips $(.05,.05)$, value coefficient $.5$,
@@ -294,16 +302,13 @@ decay $0.03\rightarrow0$ over 260,000 steps, and residual schedule
 $0.03\rightarrow0.20$ over 700,000 steps. The PPO objective additionally
 uses action-smooth and action-$\ell_2$ coefficients $(.02,.002)$; advantages
 are standardized within each update. The budget therefore contains
-$921,600/3,200=288$ PPO updates. Checkpoints are written every 50
-training episodes and at curriculum-stage boundaries; the reported file is
-the terminal
-\texttt{scheme\_d\_paper\_base\_latest\_full.pt} written after episode 1,152.
-Held-out data do not select checkpoints. Matched component variants use the
-same fixed V12 settings, budget, and action interface; no common hyperparameter
-search was completed. The historical Vanilla diagnostic was not independently
-retuned under a full-budget protocol. The archived
-`episodes.csv` files record reward, coverage, SLA, residual scale, recurrent
-counters, prediction events, and elapsed steps.
+$921,600/3,200=288$ PPO updates. Model parameters are retained every 50
+training episodes and at curriculum-stage boundaries, but all reported
+learned results use the terminal model after episode 1,152. Held-out data do
+not participate in model selection. Matched component variants use the same
+prespecified hyperparameters, budget, and action interface; no common
+hyperparameter search was completed. The historical Vanilla diagnostic was
+not independently retuned under a full-budget protocol.
 
 The reported evaluation uses a fixed 3,200-decision-step service window,
 equivalent to 160 s at $0.05$ s per decision. Timeout removal and
@@ -422,8 +427,10 @@ Table~\ref{tab:diagnostic_panels}(c) reports service cost. In Extreme, the
 $0.038$ coverage increase has $2.50$ s higher mean latency, $6.09$ s higher
 p90, $0.26$ more active spots, and lower strict SLA. On an unseen
 higher-density condition, ours obtains .868/.850 in Hard/Extreme and H2
-.888/.825; overlapping intervals make this robustness evidence. H3 tests
-planner capacity only; matched H3-residual retraining is not claimed.
+.888/.825; overlapping intervals make this robustness evidence. H3 provides
+the requested planning-horizon sensitivity test. Because the learned policy
+is conditioned on H2 actions, this comparison is not interpreted as evidence
+of cross-planner residual transfer.
 
 \begin{table*}[t]
 \caption{Mechanism and service evidence: (a) matched residual-interface
@@ -513,11 +520,11 @@ auxiliary ablations do not establish independent gains for attention, carry,
 prediction, or service shaping.
 
 H3 evaluates deterministic planner capacity, not residual transfer, because
-the learned controller was trained around H2. Finally, the $0.05$ s interval
+the learned controller is conditioned on H2. Finally, the $0.05$ s interval
 measures task time rather than inference time, and the fixed window does not
 enforce terminal clearance. The evidence therefore concerns fixed-horizon
-persistent service; terminal-drain evaluation, matched H3-residual training,
-and hardware timing remain future work.
+persistent service; terminal-drain evaluation, cross-planner residual
+transfer, and hardware timing remain future work.
 
 \begingroup
 \renewcommand{\footnotesize}{\tiny}

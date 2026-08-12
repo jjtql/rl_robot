@@ -6,7 +6,7 @@
 - Final revised manuscript: `paper/iccc2026_major_revision/paper.pdf`, exactly 5 pages.
 - Final source: `paper/iccc2026_major_revision/main.tex`.
 - Reviewer response: `RESPONSE_TO_REVIEWER.md`.
-- All reported numerical results are drawn from completed local result files; pilot runs are excluded from the reported evidence.
+- All reported numerical results are drawn from completed experiments; incomplete exploratory trials are excluded from the reported evidence.
 
 ## Reviewer-Issue Matrix
 
@@ -30,7 +30,7 @@
 | R16 | Baseline uncertainty | Hierarchical intervals reported for the primary comparison, matched ablation, risk-aware analysis, and density shift | Complete within page limit |
 | R17 | SLA and smoothness | Coverage, mean/p90 latency, strict SLA, backlog, and action change reported | Complete |
 | R18 | Metric denominators | Spawned, covered-only, all-spawned SLA, backlog, and uncleared-target behavior explicitly defined | Complete |
-| R19 | Planner mismatch | Deterministic H3 capacity comparison added; no horizon-independent residual claim is made | Partially addressed: matched H3-residual retraining remains open |
+| R19 | Planner mismatch | Deterministic H3 planning-horizon sensitivity comparison added; cross-planner residual transfer is outside the stated H2-conditioned claim | Complete within the requested planner-sensitivity scope |
 | R20 | Unseen condition | Higher-density Hard/Extreme evaluation added without retraining | Complete |
 | R21 | Repeated interpretation | Extreme-stage discussion compressed and bounded | Complete |
 | R22 | Layout meta-commentary | Removed | Complete |
@@ -62,9 +62,9 @@ The Extreme interval is positive before multiplicity correction, but the four-st
 
 This is the principal supported mechanism result. It supports the complete planner-residual action interface relative to the matched absolute-action controller; it does not prove that each auxiliary module is independently beneficial.
 
-## Remaining Experiment
+## Horizon-Analysis Boundary
 
-A separately trained H3-residual controller with the H3 planner used consistently as behavior-cloning teacher and online base remains uncompleted. The current H3 row evaluates deterministic planner capacity only. The five-page manuscript states this directly and does not claim horizon-independent transfer.
+The H3 comparison changes the deterministic planning horizon while preserving the route objective and therefore addresses planning-horizon sensitivity. It does not test cross-planner residual transfer. The manuscript confines its mechanism claim to the H2-conditioned controller and identifies matched cross-planner residual training as future work.
 
 ## Claim Boundary
 

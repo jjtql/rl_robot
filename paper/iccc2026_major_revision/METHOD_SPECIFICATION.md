@@ -1,6 +1,6 @@
 # Verified Method Specification for IC069 Revision
 
-This document records the implementation that generated the V12 paper data. It is the source for the revised equations, pseudocode, and parameter tables. Values come from the seed-0 V12 configuration and the shared implementation; seed 1 and seed 2 use the same settings except for the random seed.
+This document records the experimental protocol underlying the revised equations, pseudocode, and parameter tables. All three training replications use the same settings except for the random seed.
 
 ## 1. Task and Timing
 
@@ -32,7 +32,7 @@ This document records the implementation that generated the V12 paper data. It i
 | Quick-cover reward before scale | 16 | 14 | 12 | 10 |
 | Potential gain before scale | 8.0 | 7.5 | 6.5 | 5.8 |
 
-The V12 arrival generator additionally uses three drifting thermal hotspots and repeated burst/lull cycles:
+The evaluated arrival process additionally uses three drifting thermal hotspots and repeated burst/lull cycles:
 
 - thermal hotspot count `3`, sigma `0.22`, strength `3.8`, background weight `0.055`;
 - hotspot drift standard deviation `0.003`, lifetime `960` steps, refresh probability `0.0025`;
@@ -42,7 +42,7 @@ The V12 arrival generator additionally uses three drifting thermal hotspots and 
 
 ## 3. Risk-Aware Target Score
 
-Material observation is disabled in V12. For active spot `i`:
+Material observation is disabled in the evaluated protocol. For active spot `i`:
 
 ```text
 phi_age   = clip(age_i / A_stage, 0, 1)
@@ -55,12 +55,12 @@ q_i       = 0.40*phi_age + 0.30*phi_dist
 
 The thermal score is the clipped sum of Gaussian hotspot fields,
 `clip(sum_l a_l exp(-||p-h_l||^2/(2*sigma_h^2)), 0, 1)`, with
-`sigma_h=0.22 m`. V12 disables the optional urgency augmentation, so the
+`sigma_h=0.22 m`. The evaluated protocol disables optional urgency augmentation, so the
 urgency term is not added to `q_i` or the H2 objective.
 
 The risk-aware heuristic selects the first active spot attaining the maximum score and outputs the normalized planar direction toward it with speed action `s=1`. The stage pattern need not be monotonic because max active count, cover radius, spawn rate, initial load, and age normalization all change together.
 
-When material observation is enabled, the risk weights are `(0.35, 0.25, 0.15, 0.10, 0.15)` for age, distance, material, reachability, and thermal context. The reported V12 protocol disables material observation, so the active weights are `(0.40, 0.30, 0, 0.10, 0.20)`.
+When material observation is enabled, the risk weights are `(0.35, 0.25, 0.15, 0.10, 0.15)` for age, distance, material, reachability, and thermal context. The evaluated protocol disables material observation, so the active weights are `(0.40, 0.30, 0, 0.10, 0.20)`.
 
 ## 4. Horizon-2 Planner
 
@@ -148,7 +148,7 @@ R = R_time + R_active + R_mean_age + R_potential + R_best_progress
   + R_action_delta + R_action_L2 + R_success + R_miss.
 ```
 
-Main V12 coefficients:
+Reported coefficients:
 
 - stage time penalty: shown in the stage table;
 - active count penalty: `0.01*2.4 = 0.024` per active spot;
@@ -164,7 +164,7 @@ Main V12 coefficients:
 - in-SLA bonus gain: `20.0`; late-SLA penalty gain: `30.0`;
 - action-delta penalty gain: `0.025`; action-L2 penalty gain: `0.004`;
 - success bonus: `30.0`, emitted when the stage target count and target coverage are reached;
-- timeout miss penalty: `28.0`, inactive in V12 because timeout removal is disabled.
+- timeout miss penalty: `28.0`, inactive because timeout removal is disabled.
 
 The PPO input reward is multiplied by `0.02` and clipped to `[-4,4]`.
 
@@ -194,7 +194,7 @@ The PPO input reward is multiplied by `0.02` and clipped to `[-4,4]`.
 | BC epochs | 12 |
 | PPO-time BC coefficient | `0.03 -> 0` over 260,000 steps |
 
-The reported model is the final/latest checkpoint after the fixed curriculum. Held-out evaluation seeds are not used for checkpoint selection.
+The reported model is the terminal model after the prespecified curriculum. Held-out evaluation seeds are not used for model selection.
 
 ## 9. Variant Component Matrix
 
