@@ -1,0 +1,157 @@
+% !TeX program = xelatex
+\documentclass[UTF8,fontset=none]{ctexart}
+\usepackage[a4paper,margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,longtable,array}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\setCJKmainfont{Noto Serif CJK SC}
+\setCJKsansfont{Noto Sans CJK SC}
+\setCJKmonofont{Noto Sans Mono CJK SC}
+\setmainfont{DejaVu Serif}
+\setsansfont{DejaVu Sans}
+\setmonofont{DejaVu Sans Mono}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.35em}
+\setlist{nosep,leftmargin=2em}
+\newcommand{\reviewcomment}[1]{\par\noindent\textbf{审稿意见：}#1\par}
+\newcommand{\authorresponse}[1]{\par\noindent\textbf{作者回复：}#1\par}
+
+\title{ICCC 2026论文IC069大修审稿意见回复}
+\author{蒋健，毛轶海}
+\date{}
+
+\begin{document}
+\zihao{-5}
+\maketitle
+
+\noindent\textbf{修订后题目：}面向覆盖率的规划器引导记忆残差强化学习方法：机器人热斑覆盖研究
+
+感谢审稿人提出细致的大修意见。我们认同原投稿稿件在控制器定义、交叉实验依赖关系处理以及历史Vanilla LSTM-PPO结果解释方面不够充分。修订后的英文稿严格保持5页IEEE会议格式，同时压缩重复讨论，以纳入必要的方法定义、统计分析、基线比较和研究限制。
+
+\section{修订概述}
+\begin{enumerate}
+  \item 引言明确将ICCC Track 6作为主要方向，将任务对应到固态白酒蒸馏探气上甑过程，并说明外部目标定位假设和三个可检验研究问题。
+  \item 相关工作增加随机动态路径、形式化保护、约束强化学习和近期残差控制文献。
+  \item 完整定义指标分母、风险感知评分、Horizon-2/Horizon-3目标函数、网络维度、残差调度、动作保护、奖励系数、训练预算、课程学习和评估协议。
+  \item 主要不确定性分析改为20000次交叉分层自助重采样，分别保持训练种子、评估环境种子和回合的依赖关系，并在四阶段内进行Holm校正。
+  \item 历史Vanilla LSTM-PPO不再用于因果归因。主要机制证据来自匹配的绝对动作消融，该消融保留观测、LSTM、H2预热、预测目标、奖励、课程和训练预算。
+  \item 增加覆盖率、仅对已覆盖热斑计算的平均/p90延迟、以全部生成热斑为分母的严格SLA、活动积压和动作平滑度。
+  \item 收缩结论边界，不再声称本方法统一优于Horizon-2或具有统一速度优势。
+\end{enumerate}
+
+\section{研究范围、ICCC定位与研究问题}
+\reviewcomment{明确论文在ICCC中的方向定位，具体化物理过程，并提出可检验的研究问题。}
+
+\authorresponse{修订后的引言将Track 6（Robotics）作为主要方向，并说明与Track 2（AI for Engineering）和Track 4（Machine Learning）的联系。任务对应固态白酒蒸馏上甑过程中依据蒸汽突破位置投放酒醅的作业需求，由ABB机械臂服务外部热定位模块给出的目标。本文只评价在线路径决策与运动指令；红外图像检测、酒醅材料动力学、铺层均匀性和蒸馏质量验证均明确排除在当前实验范围之外。}
+
+引言提出三个研究问题：
+\begin{itemize}
+  \item \textbf{RQ1：}相较匹配的绝对动作PPO控制器，有界规划残差接口能否提高固定规划器的性能？
+  \item \textbf{RQ2：}该方法与其他规划器及启发式先验相比如何？
+  \item \textbf{RQ3：}该方法在延迟、严格SLA、积压和平滑度上形成何种覆盖率--服务代价权衡？
+\end{itemize}
+
+\section{缺失文献与技术定位}
+\reviewcomment{增加保护机制、约束强化学习和随机动态路径方面的相关工作。}
+
+\authorresponse{修订稿引用Alshiekh等人的动作保护研究、Achiam等人的约束策略优化以及Bertsimas和van Ryzin的随机动态路径研究，并明确两个边界。第一，本文的策略后进度检查是局部动作过滤器，不提供形式化时序逻辑安全保证。第二，延迟和积压通过标量奖励表达，本文方法不是CMDP/CPO算法。}
+
+\section{可复现性与论文表达}
+\reviewcomment{精确定义Horizon-2和风险感知方法，报告关键参数，增加组件矩阵，删除排版性元叙述，并修正带符号零值。}
+
+\authorresponse{修订后的方法部分和参数表新增以下内容：}
+\begin{itemize}
+  \item 材料观测关闭时，风险评分的年龄、接近度、可达性和热场权重为0.40、0.30、0.10和0.20；启用材料观测时，年龄、接近度、材料、可达性和热场权重为0.35、0.25、0.15、0.10和0.15。
+  \item 给出材料缺口、目标层高度、沉积核宽度和高斯热场归一化方式，并明确评估协议不使用可选紧迫度增强。
+  \item 给出Horizon-$L$有序路线枚举、模拟行程评分、折扣、剩余目标年龄项、并列处理和首动作执行规则。
+  \item 报告125维观测、8个目标槽、128维目标嵌入、4头注意力和256维LSTM。
+  \item 报告残差系数从0.03到0.20的700000步预热过程及六个阶段倍率。
+  \item 报告方向一致性阈值、进度比例与容差、反向转弯阈值、停滞阈值和保护混合比例。
+  \item 报告全部关键奖励系数、动作周期、SLA、阶段设置、PPO参数、行为克隆、辅助预测、训练预算和留出评估协议。
+  \item 报告固定3200决策步评估窗口、关闭超时移除和终端排空的设置，以及预先规定的终点模型选择规则。
+\end{itemize}
+
+组件矩阵明确列出Full、No residual、No attention、No carry、No prediction、No service和Vanilla的动作接口及组件状态。Hard阶段差值由\texttt{-0.000}修正为$<0.001$。
+
+修订后的实验协议区分MuJoCo积分周期$0.002$ s与高层动作及指标周期$0.05$ s，说明高斯热场归一化及可选紧迫度增强的停用状态，并分别报告成功奖励和未激活的超时遗漏项。全部学习方法统一采用预设1152回合课程结束后的终点模型，留出评估数据不参与模型选择。
+
+\section{规划器失配与时域敏感性}
+\reviewcomment{检验学习结果是否依赖Horizon-2，并增加低成本的规划时域比较。}
+
+\authorresponse{修订稿加入使用相同路线目标函数、但令$L=3$的Horizon-3确定性基线。H3在Low至Extreme阶段的覆盖率分别为0.917、0.927、0.860和0.841；H2分别为0.919、0.896、0.870和0.816。这表明更长时域并非在所有阶段均更优，并构成审稿意见要求的规划时域敏感性分析。}
+
+本文同时限定解释边界。学习残差以H2动作为条件，因此H3比较评价的是确定性规划器容量，不能证明残差能够跨基础规划器迁移。修订稿不作规划时域无关性声明；严格的跨规划器迁移研究需要分别训练其余条件匹配的残差控制器，本文将其列为后续研究，而不作为当前H2条件结论的证据。
+
+\section{贡献归因}
+\reviewcomment{Vanilla LSTM-PPO、No residual与Full之间的关系不清晰，无法判断性能差异来源。}
+
+\authorresponse{历史Vanilla同时移除了残差组合、H2行为克隆和预测目标，因此不进入因果结论。修订稿采用Full与匹配No-residual控制器比较。后者保留相同观测、循环编码器、H2行为克隆预热、辅助预测损失、服务奖励、课程、优化器设置和921600步预算，但输出绝对PPO动作，不使用在线规划基准和进度保护器。}
+
+Full减No-residual的覆盖率效应如下：
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+阶段 & 差值 & 分层95\%置信区间 & Holm校正$p$值\\
+\midrule
+Low & +0.079 & [0.004, 0.202] & 0.029\\
+Realistic & +0.124 & [0.036, 0.223] & 0.003\\
+Hard & +0.144 & [0.037, 0.268] & 0.011\\
+Extreme & +0.168 & [0.050, 0.285] & 0.003\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+因此，当前支持的机制结论限定为完整规划--残差动作接口相对匹配绝对动作控制器的差异。注意力、循环状态传递、预测和服务塑形的分阶段消融结果存在混合效应，本文不将其表述为四项分别得到证明的独立创新。
+
+\section{基线、公平性、统计依赖与指标}
+\subsection{基线公平性}
+\reviewcomment{重新调优直接PPO基线，或显著弱化由该基线得出的结论。}
+
+\authorresponse{历史直接LSTM-PPO结果保留为带不确定性区间的描述性诊断，但不进入因果比较或主要结论。修订稿不再声称直接PPO或LSTM必然失效。匹配No-residual实验能够控制观测、预热、辅助目标、奖励、课程和训练预算。由于尚未完成Vanilla的独立全预算调优，该结果不用于因果比较，仅作描述性报告。}
+
+确定性比较集合扩展为Horizon-2、Horizon-3、最近优先、最老优先、距离--年龄、风险感知、动态加权、ACO-TSP和规划器集成。风险感知方法在Extreme达到0.863，略高于本方法的0.855，因此正文不再声称普遍优越性。
+
+\subsection{分层不确定性}
+\reviewcomment{保持训练种子、评估种子和重复回合之间的依赖关系，不应将全部回合视作独立样本。}
+
+\authorresponse{每种学习方法采用3个训练种子与3个留出环境种子的交叉设计，每个单元包含5个回合。修订分析执行20000次交叉分层自助重采样，分别在训练标签、环境标签和所选单元内部的回合层重采样。配对方法复用相同留出场景，确定性规划器省略训练种子轴。每个预先定义的比较族在四阶段内应用Holm校正。}
+
+本方法减Horizon-2的校正结果为：
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+阶段 & 本方法减H2 & 分层95\%置信区间 & Holm校正$p$值\\
+\midrule
+Low & -0.002 & [-0.018, 0.016] & 1.000\\
+Realistic & +0.005 & [-0.018, 0.034] & 1.000\\
+Hard & $<0.001$ & [-0.040, 0.033] & 1.000\\
+Extreme & +0.038 & [0.003, 0.074] & 0.135\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Extreme的未校正区间为正，但四阶段Holm校正结果不显著。摘要、结果、讨论和结论均已统一采用该表述。
+
+\subsection{分母和服务诊断}
+\reviewcomment{定义延迟和SLA的分母，并报告服务与平滑度指标，而非只报告覆盖率。}
+
+\authorresponse{覆盖率定义为已覆盖数/生成总数，窗口结束时仍活动的热斑保留在分母中。平均延迟和p90仅以已覆盖热斑为条件；严格SLA为4 s内覆盖数/生成总数，未覆盖热斑计为失败。积压为时间平均活动热斑数，平滑度为相邻决策步动作的平均欧氏变化。评估采用固定3200决策步窗口，关闭超时移除和终端排空，因此结果属于固定时域持续服务，不代表完整过程最终清空保证。}
+
+Extreme阶段中，本方法与H2的平均延迟分别为23.88 s和21.38 s，p90为46.01 s和39.92 s，积压为3.81和3.55，严格SLA为0.103和0.128，动作变化为0.0289和0.0277。因此，论文将其表述为覆盖率优先的服务代价权衡，而非延迟优势。
+
+\subsection{未见条件}
+\reviewcomment{增加原条件之外的针对性验证。}
+
+\authorresponse{修订稿增加无需重新训练的更高密度评估。本方法/H2在Hard阶段为0.868/0.888，在Extreme阶段为0.850/0.825。由于分层区间重叠，该结果仅作为鲁棒性证据，不表述为性能优越性。}
+
+\section{五页修订}
+\reviewcomment{应将篇幅用于可复现性和验证，而非重复解释。}
+
+\authorresponse{英文修订稿严格保持5页IEEE会议格式。我们压缩了Extreme阶段的重复讨论、一般性PPO背景和非必要排版性表述，将机制、组件和服务证据合并为一个双栏表，并仅保留一组代表性轨迹，由此纳入精确定义、校正后的不确定性、扩展基线、组件核算及服务诊断。}
+
+\section{规划时域分析的适用范围}
+新增Horizon-3实验在相同确定性目标函数下检验规划时域敏感性，并非跨规划器残差迁移实验。因此，修订稿将机制结论限定于以H2为条件的控制器，并将匹配的跨规划器残差训练列为后续工作。该范围界定避免将确定性H3比较误解为残差具有时域无关迁移能力。此外，当前证据来自MuJoCo固定窗口实验，不构成真实机械臂部署或完整仿真到现实验证。
+
+\end{document}

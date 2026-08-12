@@ -1,0 +1,56 @@
+This is BibTeX, Version 0.99d (TeX Live 2022/dev/Debian)
+Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
+The top-level auxiliary file: main.aux
+The style file: IEEEtran.bst
+Reallocated singl_function (elt_size=4) to 100 items from 50.
+Reallocated singl_function (elt_size=4) to 100 items from 50.
+Reallocated singl_function (elt_size=4) to 100 items from 50.
+Reallocated wiz_functions (elt_size=4) to 6000 items from 3000.
+Reallocated singl_function (elt_size=4) to 100 items from 50.
+Database file #1: rl_robot_refs.bib
+-- IEEEtran.bst version 1.12 (2007/01/11) by Michael Shell.
+-- http://www.michaelshell.org/tex/ieeetran/bibtex/
+-- See the "IEEEtran_bst_HOWTO.pdf" manual for usage information.
+
+Done.
+You've used 14 entries,
+            4024 wiz_defined-function locations,
+            894 strings with 10134 characters,
+and the built_in function-call counts, 13207 in all, are:
+= -- 1070
+> -- 338
+< -- 139
++ -- 191
+- -- 54
+* -- 655
+:= -- 1875
+add.period$ -- 28
+call.type$ -- 14
+change.case$ -- 14
+chr.to.int$ -- 327
+cite$ -- 14
+duplicate$ -- 895
+empty$ -- 994
+format.name$ -- 67
+if$ -- 3064
+int.to.chr$ -- 0
+int.to.str$ -- 14
+missing$ -- 150
+newline$ -- 65
+num.names$ -- 14
+pop$ -- 328
+preamble$ -- 1
+purify$ -- 0
+quote$ -- 2
+skip$ -- 1025
+stack$ -- 0
+substring$ -- 776
+swap$ -- 798
+text.length$ -- 30
+text.prefix$ -- 0
+top$ -- 5
+type$ -- 14
+warning$ -- 0
+while$ -- 66
+width$ -- 16
+write$ -- 164
